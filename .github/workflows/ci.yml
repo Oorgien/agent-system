@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Drift: канон изменён, сгенерированные артефакты — нет.
+      # Authoritative enforcement именно здесь; pre-commit hook — только удобство.
+      - name: canonical vs generated
+        run: python3 tools/gen_agents.py --check
+
+      - name: tests
+        run: python3 -m unittest discover tools/tests -v
+
+      # Состояние задач в репозитории должно быть согласованным даже без ACTIVE
+      # (он gitignored и в CI отсутствует).
+      - name: task state integrity
+        run: python3 tools/check_state.py
