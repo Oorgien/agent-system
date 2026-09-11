@@ -83,12 +83,15 @@ def validate(a, path):
                 f"поведения, и вместе с ними — регрессия, объясняющая их существование.")
 
 
-def build():
+def build(root=None, names=None):
     """Возвращает ({путь: содержимое}, [предупреждения])."""
     files, warnings = {}, []
-    canon = sorted(CANON_DIR.glob("*.md"))
+    canon_dir = Path(root) / ".agents" / "agents" if root is not None else CANON_DIR
+    canon = sorted(canon_dir.glob("*.md"))
+    if names is not None:
+        canon = [p for p in canon if p.stem in names]
     if not canon:
-        raise SchemaError(f"{CANON_DIR}: канонических агентов не найдено")
+        raise SchemaError(f"{canon_dir}: канонических агентов не найдено")
 
     for path in canon:
         agent = load(path)
@@ -99,7 +102,8 @@ def build():
     return files, warnings
 
 
-def orphans(expected):
+def orphans(expected, root=None):
+    root = Path(root) if root is not None else ROOT
     """Сгенерированные ранее файлы, которых канон больше не порождает.
 
     Владение подтверждается маркером внутри файла: файл без маркера мы не создавали
@@ -107,11 +111,11 @@ def orphans(expected):
     """
     found = []
     for ad in ADAPTERS:
-        d = ROOT / ad.TARGET_DIR
+        d = root / ad.TARGET_DIR
         if not d.is_dir():
             continue
         for f in sorted(d.glob(f"*{ad.EXT}")):
-            rel = f.relative_to(ROOT)
+            rel = f.relative_to(root)
             if rel in expected:
                 continue
             if ad.MARKER in f.read_text(encoding="utf-8"):
@@ -124,10 +128,12 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true",
                     help="не менять файлы; выйти с кодом 1 при расхождении")
+    ap.add_argument("--project", type=Path, default=ROOT)
     args = ap.parse_args()
+    root = args.project.resolve()
 
     try:
-        files, warnings = build()
+        files, warnings = build(root)
     except (SchemaError, Inexpressible, RenderError,
             frontmatter.FrontmatterError) as e:
         print(f"ОШИБКА: {e}", file=sys.stderr)
@@ -136,11 +142,11 @@ def main():
     for w in warnings:
         print(f"предупреждение: {w}", file=sys.stderr)
 
-    stale = orphans(set(files))
+    stale = orphans(set(files), root)
     drift = []
 
     for rel, text in sorted(files.items()):
-        p = ROOT / rel
+        p = root / rel
         current = p.read_text(encoding="utf-8") if p.exists() else None
         if current == text:
             continue
@@ -163,7 +169,7 @@ def main():
     for rel, why in drift:
         print(f"записан: {rel} ({why})")
     for rel in stale:
-        (ROOT / rel).unlink()
+        (root / rel).unlink()
         print(f"удалён осиротевший: {rel}")
     if not drift and not stale:
         print(f"без изменений ({len(files)} файлов)")

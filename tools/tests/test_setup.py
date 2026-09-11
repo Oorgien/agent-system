@@ -68,7 +68,7 @@ class TestProjectKey(unittest.TestCase):
 
         self.assertEqual(os.readlink(repo / ".agents" / "memory"),
                          os.readlink(wt / ".agents" / "memory"))
-        self.assertEqual(Path(os.readlink(repo / ".agents" / "memory")).name, "repo")
+        self.assertEqual(Path(os.readlink(repo / ".agents" / "memory")).name, "repo-memory")
 
     def test_explicit_argument_wins(self):
         repo = self.make_repo("repo")
@@ -106,7 +106,7 @@ class TestProjectKey(unittest.TestCase):
         renamed = self.tmp / "renamed"
         repo.rename(renamed)
         self.run_setup(renamed)
-        self.assertEqual((renamed / ".agents/memory").resolve(), (self.store / "repo").resolve())
+        self.assertEqual((renamed / ".agents/memory").resolve(), (self.store / "repo-memory").resolve())
 
     def test_invalid_key_does_not_replace_saved_key(self):
         repo = self.make_repo("repo")
@@ -163,7 +163,7 @@ class TestProjectKey(unittest.TestCase):
         repo = self.make_repo("repo")
         self.run_setup(repo)
         linked = (repo / ".agents/memory").resolve()
-        self.assertEqual(linked, (self.store / "repo").resolve())
+        self.assertEqual(linked, (self.store / "repo-memory").resolve())
 
         # повторный запуск без переменной не переезжает в ~/.agents-memory
         env = dict(os.environ, HOME=str(self.tmp))
@@ -183,7 +183,64 @@ class TestProjectKey(unittest.TestCase):
         shutil.copy2(SETUP, plain / "setup.sh")
         out = self.run_setup(plain).stdout
         self.assertIn("ВНИМАНИЕ", out)
-        self.assertEqual(Path(os.readlink(plain / ".agents" / "memory")).name, "plain")
+        self.assertEqual(Path(os.readlink(plain / ".agents" / "memory")).name, "plain-memory")
+
+    def test_seed_commit_failure_does_not_block_memory_link(self):
+        repo = self.make_repo("repo")
+        env = dict(os.environ, AGENTS_MEMORY_STORE=str(self.store), HOME=str(self.tmp),
+                   GIT_CONFIG_COUNT="2", GIT_CONFIG_KEY_0="commit.gpgsign", GIT_CONFIG_VALUE_0="true",
+                   GIT_CONFIG_KEY_1="gpg.program", GIT_CONFIG_VALUE_1=str(self.tmp / "missing-gpg"))
+        out = subprocess.run([BASH, str(repo / "setup.sh")], cwd=repo, env=env,
+                             capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("начальный коммит не создан", out.stdout)
+        self.assertTrue((repo / ".agents/memory").is_symlink())
+        self.assertTrue((self.store / "repo-memory/.git").is_dir())
+
+    def test_existing_link_without_saved_settings_is_preserved(self):
+        repo = self.make_repo("repo")
+        target = self.tmp / "custom" / "old-key"
+        target.mkdir(parents=True)
+        (target / "fact.md").write_text("existing knowledge")
+        (repo / ".agents").mkdir()
+        (repo / ".agents/memory").symlink_to(target)
+        env = dict(os.environ, HOME=str(self.tmp))
+        env.pop("AGENTS_MEMORY_STORE", None)
+        out = subprocess.run([BASH, str(repo / "setup.sh")], cwd=repo,
+                             env=env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual((repo / ".agents/memory").resolve(), target.resolve())
+        self.assertEqual((target / "fact.md").read_text(), "existing knowledge")
+        self.assertTrue((target / ".git").is_dir())
+        self.assertFalse((target.parent / ".git").exists())
+
+    def test_projects_have_independent_git_histories(self):
+        a, b = self.make_repo("a"), self.make_repo("b")
+        self.run_setup(a)
+        self.run_setup(b)
+        self.assertFalse((self.store / ".git").exists())
+        for name in ("a-memory", "b-memory"):
+            target = self.store / name
+            self.assertTrue((target / ".git").is_dir())
+            self.assertEqual(Path(git("rev-parse", "--show-toplevel", cwd=target).stdout.strip()).resolve(), target.resolve())
+        (self.store / "a-memory" / "fact.md").write_text("Only A")
+        self.assertNotIn("fact.md", git("status", "--porcelain", cwd=self.store / "b-memory").stdout)
+
+    def test_legacy_store_rejected_without_changes(self):
+        repo = self.make_repo("repo")
+        self.store.mkdir()
+        git("init", "-q", cwd=self.store)
+        (self.store / "old.md").write_text("legacy")
+        before = (repo / ".git/config").read_bytes()
+        r = subprocess.run([BASH, str(repo / "setup.sh")], cwd=repo,
+                           capture_output=True, text=True,
+                           env=dict(os.environ, AGENTS_MEMORY_STORE=str(self.store)))
+        self.assertEqual(r.returncode, 1)
+        self.assertEqual((repo / ".git/config").read_bytes(), before)
+        self.assertFalse((repo / ".agents").exists())
+        self.assertFalse((self.store / "repo-memory").exists())
+        self.assertEqual((self.store / "old.md").read_text(), "legacy")
+        self.assertTrue((self.store / ".git").is_dir())
 
     def test_is_idempotent(self):
         repo = self.make_repo("repo")

@@ -9,6 +9,18 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Internal CLI integration: select target before any reads or writes.
+STORAGE_ONLY=""
+NO_COMMIT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --project) ROOT="$(cd "$2" && pwd -P)"; shift 2 ;;
+    --storage-only) STORAGE_ONLY=1; shift ;;
+    --no-commit) NO_COMMIT=1; shift ;;
+    *) break ;;
+  esac
+done
+
 say() { printf '  %s\n' "$*"; }
 
 # --- ключ проекта ----------------------------------------------------------
@@ -25,8 +37,13 @@ project_key() {
   common="$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null)" || return 1
   [ -n "$common" ] || return 1
   common="$(cd "$ROOT" && cd "$common" 2>/dev/null && pwd)" || return 1
-  basename "$(dirname "$common")"
+  printf '%s-memory\n' "$(basename "$(dirname "$common")")"
 }
+
+OLD_TARGET=""
+if [ -L "$ROOT/.agents/memory" ] && [ -d "$ROOT/.agents/memory" ]; then
+  OLD_TARGET="$(cd "$ROOT/.agents/memory" && pwd -P)"
+fi
 
 FALLBACK=""
 if [ $# -gt 0 ] && [ -n "$1" ]; then
@@ -34,10 +51,13 @@ if [ $# -gt 0 ] && [ -n "$1" ]; then
   ORIGIN="аргумент командной строки"
 elif PROJECT="$(git -C "$ROOT" config --local --get agents.memoryKey 2>/dev/null)" && [ -n "$PROJECT" ]; then
   ORIGIN="общий git config: agents.memoryKey"
+elif [ -n "$OLD_TARGET" ]; then
+  PROJECT="$(basename "$OLD_TARGET")"
+  ORIGIN="существующая ссылка памяти"
 elif PROJECT="$(project_key)" && [ -n "$PROJECT" ] && [ "$PROJECT" != "/" ]; then
   ORIGIN="имя каталога основного рабочего дерева git"
 else
-  PROJECT="$(basename "$ROOT")"
+  PROJECT="$(basename "$ROOT")-memory"
   ORIGIN="имя текущего каталога"
   FALLBACK=1
 fi
@@ -67,20 +87,36 @@ if [ -n "${AGENTS_MEMORY_STORE:-}" ]; then
 elif [ -n "$SAVED_STORE" ]; then
   STORE="$SAVED_STORE"
   STORE_ORIGIN="общий git config: agents.memoryStore"
+elif [ -n "$OLD_TARGET" ]; then
+  STORE="$(dirname "$OLD_TARGET")"
+  STORE_ORIGIN="существующая ссылка памяти"
 else
   STORE="$HOME/.agents-memory"
   STORE_ORIGIN="стандартный каталог"
 fi
 
-STORE_EXISTED=1
-[ -d "$STORE" ] || STORE_EXISTED=""
+# Проверить схему до mkdir, git config и изменения ссылок.
+# Старую общую историю не удаляем и не прячем вложенным git init.
+if [ -e "$STORE/.git" ] || [ -L "$STORE/.git" ] || { [ -f "$STORE/HEAD" ] && [ -d "$STORE/objects" ]; }; then
+  echo "ОШИБКА: старое общее Git-хранилище: $STORE. Нужен отдельный репозиторий на проект; сохраните историю и перенесите память явно." >&2
+  exit 1
+fi
+TARGET="$STORE/$PROJECT"
+if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -d "$TARGET" ]; } || [ -L "$TARGET/.git" ] || { [ -e "$TARGET/.git" ] && [ ! -d "$TARGET/.git" ]; } || [ -L "$TARGET/.gitkeep" ] || { [ -e "$TARGET/.gitkeep" ] && [ ! -f "$TARGET/.gitkeep" ]; }; then
+  echo "ОШИБКА: небезопасный путь репозитория памяти: $TARGET" >&2
+  exit 1
+fi
+if [ -d "$TARGET/.git" ]; then
+  TOP="$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null)" || exit 1
+  [ "$(cd "$TOP" && pwd -P)" = "$(cd "$TARGET" && pwd -P)" ] || exit 1
+elif [ -f "$TARGET/HEAD" ] && [ -d "$TARGET/objects" ]; then
+  echo "ОШИБКА: память должна быть рабочим деревом, не bare-репозиторием: $TARGET" >&2
+  exit 1
+fi
 mkdir -p "$STORE"
-
-# Абсолютный физический путь. Относительное значение переменной разрешается здесь
-# и сейчас: сохранить его как есть значит дать следующей сессии истолковать его
-# от другого каталога. По той же причине -P: сравнение в check_state.py идёт
-# по разрешённым путям.
+# Сохраняем физический абсолютный путь, независимый от cwd следующей сессии.
 STORE="$(cd "$STORE" && pwd -P)"
+TARGET="$STORE/$PROJECT"
 
 # --local читает и пишет общий repository config, не global/config.worktree.
 # Ошибка сохранения должна остановить setup до изменения симлинков.
@@ -101,31 +137,19 @@ if [ -n "$FALLBACK" ]; then
   echo
 fi
 
-# --- 1. хранилище памяти: одно репо на все проекты -------------------------
-[ -n "$STORE_EXISTED" ] || say "создано $STORE"
-
-if [ ! -d "$STORE/.git" ]; then
-  git -C "$STORE" init -q
-  cat > "$STORE/README.md" <<'EOF'
-# agents-memory
-
-Приватное хранилище долгосрочной памяти агентов. Один подкаталог на проект.
-Один факт — один файл: так кросс-машинные мержи почти не конфликтуют.
-
-Перенос на другую машину:
-
-    git remote add origin <приватный-remote>
-    git push -u origin main
-EOF
-  git -C "$STORE" add README.md
-  git -C "$STORE" -c user.email=setup@local -c user.name=setup \
-      commit -qm "init memory store" || true
-  say "инициализирован git-репозиторий в $STORE"
-  say "remote не настроен — добавьте, когда понадобится перенос между машинами"
+# --- 1. отдельный Git-репозиторий памяти проекта ----------------------------
+mkdir -p "$TARGET"
+if [ ! -d "$TARGET/.git" ]; then
+  git -C "$TARGET" init -q
+  [ -f "$TARGET/.gitkeep" ] || touch "$TARGET/.gitkeep"
+  if [ -z "$NO_COMMIT" ]; then
+    git -C "$TARGET" add .gitkeep
+    git -C "$TARGET" -c user.email=setup@local -c user.name=setup \
+        commit -qm "init project memory" || say "ВНИМАНИЕ: начальный коммит не создан; память подключена без коммита"
+  fi
+  say "инициализирован git-репозиторий памяти в $TARGET"
+  say "remote не настроен — при необходимости подключите приватный remote этого проекта"
 fi
-
-mkdir -p "$STORE/$PROJECT"
-[ -f "$STORE/$PROJECT/.gitkeep" ] || touch "$STORE/$PROJECT/.gitkeep"
 
 # --- 2. симлинки -----------------------------------------------------------
 link() {  # link <путь> <цель>
@@ -141,6 +165,8 @@ link() {  # link <путь> <цель>
   ln -s "$target" "$path"
   say "создан симлинк: $path -> $target"
 }
+
+[ -n "$STORAGE_ONLY" ] && exit 0
 
 link "$ROOT/.agents/memory" "$STORE/$PROJECT"
 link "$ROOT/.claude/skills" "../.agents/skills"

@@ -1,26 +1,27 @@
 #!/usr/bin/env python3
-"""Проверка состояния задачи — механическая часть процедуры старта из AGENTS.md §2.
+"""Проверка состояния задач — механическая часть процедуры старта из AGENTS.md §2.
 
-    check_state.py            проверить текущее состояние
-    check_state.py --resolve  то же + показать, какую задачу выбрал бы fallback
+    check_state.py            проверить состояние
+    check_state.py --resolve  то же + показать, что видит текущий чат
 
 Проверяет ровно то, что AGENTS.md требует проверять перед загрузкой задачи, и по тем же
-правилам. Главное из них: при расхождении ACTIVE с веткой задача НЕ загружается молча —
-загрузить чужую задачу хуже, чем не выбрать никакую.
+правилам. Главное из них: битая привязка НЕ чинится автоматически и задача по ней не
+загружается — загрузить чужую задачу хуже, чем не выбрать никакую.
 
 Скрипт ничего не чинит и ничего не пишет: он только сообщает.
 """
 import argparse
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import task_state as ts
+from memory_layout import layout_error
+
 ROOT = Path(__file__).resolve().parent.parent
-STATE = ROOT / ".agents" / "state"
-TASKS = STATE / "tasks"
-ACTIVE = STATE / "ACTIVE"
 MEMORY = ROOT / ".agents" / "memory"
 
 OK, WARN, ERR = "ok  ", "warn", "ERR "
@@ -49,27 +50,6 @@ def git_branch():
         return None if r.returncode or b == "HEAD" else b
     except (OSError, subprocess.SubprocessError):
         return None
-
-
-def task_meta(slug):
-    """Читает frontmatter task.md. Возвращает (meta, ошибка)."""
-    p = TASKS / slug / "task.md"
-    if not p.is_file():
-        return None, f"{p.relative_to(ROOT)} не существует"
-    text = p.read_text(encoding="utf-8")
-    m = re.match(r"^---\n(.*?)\n---\n", text, re.S)
-    if not m:
-        return None, f"{p.relative_to(ROOT)}: нет frontmatter"
-    meta = {}
-    for line in m.group(1).split("\n"):
-        if ":" in line and not line.strip().startswith("#"):
-            k, _, v = line.partition(":")
-            meta[k.strip()] = v.split("#", 1)[0].strip()
-    return meta, None
-
-
-def all_tasks():
-    return sorted(d.name for d in TASKS.iterdir() if d.is_dir()) if TASKS.is_dir() else []
 
 
 def git_config(key):
@@ -116,92 +96,156 @@ def memory(r):
                     f"запустите ./setup.sh")
         return
 
+    actual = MEMORY.resolve()
+    error = layout_error(actual.parent, actual, require_repository=True)
+    if error:
+        r.add(ERR, error)
+
     expected = expected_memory()
     if expected is None:
         return
 
     # resolve() у самой ссылки, а не у os.readlink(): относительная цель
     # разрешается от каталога ссылки, а не от текущего каталога процесса.
-    actual = MEMORY.resolve()
     if actual != expected.resolve():
         r.add(ERR, f".agents/memory ведёт в {actual}, а сохранённые настройки задают "
                    f"{expected}. Дерево читает не ту память: повторите ./setup.sh здесь")
 
 
-def main():
+def gc_candidates(root):
+    """Привязки, которые будущий GC вправе удалить, — единая точка обхода.
+
+    Сейчас функция только сообщает: чат мог быть привязан к задаче, которую завершили
+    из другого окна, и удалять его файл молча нельзя, пока никто не спросил. Когда GC
+    появится, он получит готовый обход и не будет переписан заново.
+
+    Возвращает [(session_id, record, причина)]. Живые чаты от мёртвых здесь не
+    отличаются: список процессов сессии — не наше знание.
+    """
+    out = []
+    records, _ = ts.bindings(root)
+    for sid, record in sorted(records.items()):
+        problems = ts.binding_problems(root, record["slug"])
+        if problems:
+            out.append((sid, record, problems[0]))
+    return out
+
+
+def tasks(r, root, branch):
+    """Целостность каждой задачи. Возвращает slug'и, к которым можно привязываться."""
+    bindable = []
+    for slug in ts.tasks(root):
+        meta, err = ts.task_meta(root, slug)
+        if err:
+            r.add(ERR, err)
+            continue
+        problems = ts.task_problems(root, slug, meta)
+        for problem in problems:
+            r.add(ERR, problem)
+        _, broken = ts.journal_entries(root, slug)
+        for name in broken:
+            r.add(ERR, f"{slug}: имя записи журнала не парсится: journal/{name} "
+                       f"(ожидается <YYYYMMDDThhmmssZ>-<sid8>[-N].md)")
+        if problems:
+            continue
+        if meta.get("status") in ts.BINDABLE:
+            bindable.append(slug)
+            # Ветка — подсказка: несколько задач в одном дереве теперь норма.
+            if branch and meta.get("branch") and meta["branch"] != branch:
+                r.add(WARN, f"{slug}: branch='{meta['branch']}', а мы на '{branch}' — "
+                            f"подсказка устарела, это не ошибка")
+    return bindable
+
+
+def sessions(r, root):
+    records, problems = ts.bindings(root)
+    for problem in problems:
+        r.add(ERR, f"привязка не читается: {problem}")
+    for sid, record, reason in gc_candidates(root):
+        r.add(ERR, f"чат {sid} привязан к задаче, к которой привязываться нельзя: {reason}")
+    stale = {sid for sid, _, _ in gc_candidates(root)}
+    by_task = {}
+    for sid, record in records.items():
+        if sid not in stale:            # о негодной привязке уже сообщили выше
+            by_task.setdefault(record["slug"], []).append(sid)
+    for slug in sorted(by_task):
+        r.add(OK, f"{slug}: привязанных чатов — {len(by_task[slug])} "
+                  f"({', '.join(sorted(by_task[slug]))})")
+    return records
+
+
+def legacy(r, root):
+    """Старые ACTIVE и LOCK: не ошибка, но и не состояние — их роль забрал sessions/."""
+    slug = ts.legacy_pointer(root)
+    if slug:
+        r.add(WARN, f"остался .agents/state/ACTIVE='{slug}' — привяжите чат "
+                    f"(`agent-system task bind {slug}`), после этого указатель удаляется")
+    if (ts.state_dir(root) / "LOCK").exists():
+        r.add(WARN, "остался .agents/state/LOCK — его роль забрал sessions/, файл можно удалить")
+
+
+def current(r, root, resolution):
+    if resolution.kind == "no-session":
+        r.add(WARN, "session id не определён — работа без привязки. Задайте "
+                    "AGENTS_SESSION_ID или привяжите чат явно")
+    elif resolution.kind == "bound":
+        r.add(OK, f"чат {resolution.sid} привязан к задаче: {resolution.slug}")
+    elif resolution.kind == "invalid":
+        for problem in resolution.problems:
+            r.add(ERR, f"привязка чата {resolution.sid} недействительна: {problem}. "
+                       f"НЕ загружать молча: перезапустить discovery")
+    elif resolution.kind == "suggest":
+        r.add(WARN, f"чат не привязан; единственный кандидат — {resolution.slug}. "
+                    f"Привязка не делается автоматически")
+    elif resolution.kind == "ambiguous":
+        r.add(WARN, f"чат не привязан, активных задач несколько: "
+                    f"{', '.join(resolution.candidates)}. Автоматический выбор НЕ делается")
+    else:
+        r.add(WARN, "чат не привязан, активных задач нет")
+
+
+def main(argv=None):
+    global ROOT, MEMORY
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--resolve", action="store_true",
-                    help="показать результат discovery по ветке")
-    args = ap.parse_args()
+                    help="показать, что видит текущий чат (по умолчанию тоже показывается)")
+    ap.add_argument("--project", type=Path, default=ROOT)
+    ap.add_argument("--session-id", help="проверить от имени конкретного чата")
+    args = ap.parse_args(argv)
+    ROOT = args.project.resolve()
+    MEMORY = ROOT / ".agents" / "memory"
 
     r = Report()
     branch = git_branch()
     print(f"ветка: {branch or '(detached HEAD или не git)'}")
+
+    try:
+        sid = args.session_id or ts.session_id()
+        if args.session_id:
+            ts.validate_session(sid)
+    except ts.StateError as e:
+        print()
+        r.add(ERR, f"session id не принят: {e}")
+        memory(r)
+        return r.dump()
+    print(f"чат:   {sid or '(session id не определён)'}")
     print()
 
-    slugs = all_tasks()
-
-    # Пустой список задач сам по себе НЕ означает чистого состояния: ACTIVE
-    # переживает удаление задачи и переключение ветки, а раньше проверка
-    # возвращалась отсюда до того, как указатель вообще читался. Ранний выход
-    # допустим только когда указателя тоже нет.
-    if not slugs and not ACTIVE.is_file():
-        r.add(OK, "задач нет, ACTIVE не выставлен — чистое состояние")
+    slugs = ts.tasks(ROOT)
+    bindings, _ = ts.bindings(ROOT)
+    if not slugs and not bindings and not ts.legacy_pointer(ROOT):
+        r.add(OK, "задач нет, привязок нет — чистое состояние")
         memory(r)
         return r.dump()
 
-    # --- целостность каждой задачи ----------------------------------------
-    active_matching = []
-    for slug in slugs:
-        meta, err = task_meta(slug)
-        if err:
-            r.add(ERR, err)
-            continue
-        if meta.get("id") != slug:
-            r.add(ERR, f"{slug}: id='{meta.get('id')}' не совпадает с именем каталога")
-        if meta.get("status") not in ("active", "done", "abandoned"):
-            r.add(ERR, f"{slug}: status='{meta.get('status')}' — недопустимое значение")
-        if not (TASKS / slug / "journal.md").is_file():
-            r.add(ERR, f"{slug}: нет journal.md")
-        if meta.get("status") == "active" and branch and meta.get("branch") == branch:
-            active_matching.append(slug)
-
-    # --- ACTIVE ------------------------------------------------------------
-    if not ACTIVE.is_file():
-        r.add(WARN, "ACTIVE отсутствует — задача будет выбираться discovery по ветке")
-    else:
-        slug = ACTIVE.read_text(encoding="utf-8").strip()
-        if "/" in slug or slug.startswith("."):
-            r.add(ERR, f"ACTIVE='{slug}' — должен быть slug внутри tasks/, а не путь")
-        elif slug not in slugs:
-            r.add(ERR, f"ACTIVE='{slug}' — такой задачи нет")
-        else:
-            meta, err = task_meta(slug)
-            if err:
-                r.add(ERR, err)
-            elif meta.get("status") != "active":
-                r.add(ERR, f"ACTIVE='{slug}', но status='{meta.get('status')}'")
-            elif branch and meta.get("branch") and meta["branch"] != branch:
-                r.add(ERR,
-                      f"ACTIVE='{slug}' привязан к ветке '{meta['branch']}', "
-                      f"а мы на '{branch}'. НЕ загружать молча: перезапустить discovery")
-            else:
-                r.add(OK, f"активная задача: {slug}")
-
-    # --- discovery ---------------------------------------------------------
-    if args.resolve or not ACTIVE.is_file():
-        if branch is None:
-            r.add(WARN, "detached HEAD — автоматического совпадения по ветке нет, "
-                        "задача выбирается явно")
-        elif len(active_matching) == 1:
-            r.add(OK, f"discovery по ветке: {active_matching[0]}")
-        elif not active_matching:
-            r.add(WARN, f"нет активной задачи с branch='{branch}' — выбор не делается")
-        else:
-            r.add(ERR, f"несколько активных задач на ветке '{branch}': "
-                       f"{active_matching}. Автоматический выбор НЕ делается")
-
+    tasks(r, ROOT, branch)
+    sessions(r, ROOT)
+    legacy(r, ROOT)
+    try:
+        current(r, ROOT, ts.resolve(ROOT, sid))
+    except ts.StateError as e:
+        r.add(ERR, str(e))
     memory(r)
     return r.dump()
 
