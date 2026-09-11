@@ -55,11 +55,12 @@ class TestSessionIdentity(Base):
 
     def test_absent_identity_is_a_mode_not_an_error(self):
         self.assertIsNone(ts.session_id({}))
-        self.assertIsNone(ts.session_id({"CLAUDE_CODE_SESSION_ID": "   "}))
+        self.assertIsNone(ts.session_id({"CLAUDE_CODE_SESSION_ID": ""}))
 
     def test_invalid_identity_is_refused_not_sanitized(self):
         """Подчищенный чужой id склеил бы два разных чата в одну привязку."""
-        for bad in ("../escape", "a/b", "a b", "", "x" * 129, "sid\n"):
+        for bad in ("../escape", "a/b", "a b", "", "x" * 129, "sid\n",
+                    ".", "..", ".locks", ".gitkeep", ".DS_Store", ".agents-" + "a" * 32):
             with self.assertRaises(ts.StateError):
                 ts.validate_session(bad)
         with self.assertRaises(ts.StateError):
@@ -132,20 +133,20 @@ class TestJournal(Base):
 
     def test_entry_name_carries_order_and_identity(self):
         name = ts.entry_name(self.moment(), "019a3f7c-1111-2222")
-        self.assertEqual(name, "20260910T142233Z-019a3f7c.md")
+        self.assertEqual(name, "20260910T142233Z-97ad7ed94aea19c18593d891b75c9a5b-000001.md")
 
     def test_collision_within_one_second_of_one_session(self):
         self.task("task-a")
         a = ts.write_entry(self.root, "task-a", "019a3f7c", "first", moment=self.moment())
         b = ts.write_entry(self.root, "task-a", "019a3f7c", "second", moment=self.moment())
         self.assertNotEqual(a.name, b.name)
-        self.assertEqual(b.name, "20260910T142233Z-019a3f7c-2.md")
+        self.assertEqual(b.name, "20260910T142233Z-28817f69995e67078924a719174afa2f-000002.md")
         self.assertIn("first", a.read_text(encoding="utf-8"))
 
     def test_ordinal_sorts_after_the_base_name(self):
         """Голая лексикографика ставит '-2' перед '.md': '-' < '.' в ASCII."""
-        keys = [ts.entry_key("20260910T142233Z-019a3f7c.md"),
-                ts.entry_key("20260910T142233Z-019a3f7c-2.md")]
+        keys = [ts.entry_key("20260910T142233Z-0123456789abcdef0123456789abcdef-000001.md"),
+                ts.entry_key("20260910T142233Z-0123456789abcdef0123456789abcdef-000002.md")]
         self.assertEqual(keys, sorted(keys))
 
     def test_entry_has_frontmatter(self):
@@ -166,7 +167,7 @@ class TestJournal(Base):
         ordered, broken = ts.journal_entries(self.root, "task-a")
         self.assertEqual(broken, [])
         self.assertEqual([p.name for p in ordered],
-                         ["journal.md", "20260910T142233Z-sid-1.md"])
+                         ["journal.md", "20260910T142233Z-500350f230ef17d0de44182d1a0889f5-000001.md"])
 
     def test_unparsable_entry_is_reported_not_dropped(self):
         self.task("task-a")
@@ -266,9 +267,10 @@ class TestResolution(Base):
         self.assertEqual(r.candidates, [])          # discovery предлагает только active
 
     def test_binding_to_a_finished_task_is_invalid(self):
-        self.task("task-a", status="done")
+        self.task("task-a")
         self.task("task-b")
         ts.bind(self.root, "sid-1", "task-a")
+        ts.set_status(self.root, "task-a", "done")
         r = ts.resolve(self.root, "sid-1")
         self.assertEqual(r.kind, "invalid")
         self.assertTrue(r.problems)
@@ -282,10 +284,10 @@ class TestResolution(Base):
 
     def test_id_mismatch_is_invalid(self):
         d = self.task("task-a")
+        ts.bind(self.root, "sid-1", "task-a")
         (d / "task.md").write_text(TASK.format(slug="other", status="active", branch="main"),
                                    encoding="utf-8")
-        self.assertEqual(ts.resolve(self.root, "sid-1").kind, "none")
-        ts.bind(self.root, "sid-1", "task-a")
+        self.assertEqual(ts.resolve(self.root, "unbound").kind, "none")
         self.assertEqual(ts.resolve(self.root, "sid-1").kind, "invalid")
 
     def test_single_active_task_is_suggested_not_bound(self):
@@ -343,6 +345,14 @@ class TestTaskFile(Base):
         self.assertIsNone(err)
         self.assertEqual(meta["status"], "done")
         self.assertIn("# Заголовок", (d / "task.md").read_text(encoding="utf-8"))
+
+    def test_set_status_refuses_a_corrupt_task_contract(self):
+        d = self.task("task-a")
+        text = (d / "task.md").read_text().replace("id: task-a", "id: different")
+        (d / "task.md").write_text(text)
+        with self.assertRaises(ts.StateError):
+            ts.set_status(self.root, "task-a", "done")
+        self.assertEqual((d / "task.md").read_text(), text)
 
     def test_status_must_be_known(self):
         self.task("task-a")

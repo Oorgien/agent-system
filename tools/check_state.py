@@ -144,8 +144,8 @@ def tasks(r, root, branch):
             r.add(ERR, problem)
         _, broken = ts.journal_entries(root, slug)
         for name in broken:
-            r.add(ERR, f"{slug}: имя записи журнала не парсится: journal/{name} "
-                       f"(ожидается <YYYYMMDDThhmmssZ>-<sid8>[-N].md)")
+            r.add(ERR, f"{slug}: имя или содержимое записи журнала не парсится: journal/{name} "
+                       f"(ожидаются целая запись и согласованные имя/session/at)")
         if problems:
             continue
         if meta.get("status") in ts.BINDABLE:
@@ -181,7 +181,7 @@ def legacy(r, root):
         r.add(WARN, f"остался .agents/state/ACTIVE='{slug}' — привяжите чат "
                     f"(`agent-system task bind {slug}`), после этого указатель удаляется")
     if (ts.state_dir(root) / "LOCK").exists():
-        r.add(WARN, "остался .agents/state/LOCK — его роль забрал sessions/, файл можно удалить")
+        r.add(WARN, "остался .agents/state/LOCK — проверьте владельца и остановите старую сессию перед ручным удалением")
 
 
 def current(r, root, resolution):
@@ -221,8 +221,8 @@ def main(argv=None):
     print(f"ветка: {branch or '(detached HEAD или не git)'}")
 
     try:
-        sid = args.session_id or ts.session_id()
-        if args.session_id:
+        sid = args.session_id if args.session_id is not None else ts.session_id()
+        if args.session_id is not None:
             ts.validate_session(sid)
     except ts.StateError as e:
         print()
@@ -232,19 +232,16 @@ def main(argv=None):
     print(f"чат:   {sid or '(session id не определён)'}")
     print()
 
-    slugs = ts.tasks(ROOT)
-    bindings, _ = ts.bindings(ROOT)
-    if not slugs and not bindings and not ts.legacy_pointer(ROOT):
-        r.add(OK, "задач нет, привязок нет — чистое состояние")
-        memory(r)
-        return r.dump()
-
-    tasks(r, ROOT, branch)
-    sessions(r, ROOT)
-    legacy(r, ROOT)
     try:
+        slugs = ts.tasks(ROOT)
+        bindings, binding_errors = ts.bindings(ROOT)
+        if not slugs and not bindings and not binding_errors and not ts.legacy_pointer(ROOT):
+            r.add(OK, "задач нет, привязок нет — чистое состояние")
+        tasks(r, ROOT, branch)
+        sessions(r, ROOT)
+        legacy(r, ROOT)
         current(r, ROOT, ts.resolve(ROOT, sid))
-    except ts.StateError as e:
+    except (ts.StateError, OSError) as e:
         r.add(ERR, str(e))
     memory(r)
     return r.dump()

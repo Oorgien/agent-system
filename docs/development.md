@@ -62,13 +62,33 @@ git clone <приватный-remote> ~/.agents-memory/<key>
 ```
 .agents/agents/     три роли: explorer, implementer, reviewer  (canonical)
 .agents/skills/     локальные скиллы агента для разработки CLI
-skills/             поставляемые скиллы → .agents/skills/ целевого проекта
-.agents/state/      tasks/<slug>/task.md + journal/<ts>-<sid8>.md  (в git)
+skills/             checkpoint и migrate-memory → .agents/skills/ целевого проекта
+.agents/state/      tasks/<slug>/task.md + journal/<ts>-<hash32>-<ordinal6>.md
                     sessions/<session-id>  привязка чата к задаче   (gitignored)
 tools/              генератор, адаптеры, валидатор состояния, тесты
 .claude/agents/     GENERATED
 .codex/agents/      GENERATED
 ```
+
+В клоне CLI вся `.agents/` — локальные материалы разработки, gitignored.
+В подключаемом проекте установленные определения и состояние задач можно коммитить;
+исключаются память, привязки, телеметрия и legacy `ACTIVE`/`LOCK` до миграции.
+Установщик сохраняет чужие скиллы проекта; локальные скиллы клона в поставку не входят.
+
+Журнал читает `agent-system task journal [slug]`: legacy `journal.md` первым,
+затем проверенные старые и новые записи. Без slug используется привязка текущего
+чата; повреждения вызывают ошибку, конвертации старых файлов нет. Timestamp задаёт
+детерминированный порядок показа, а не причинную последовательность между машинами.
+
+Новые имена имеют вид `<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`: первые 32 строчных
+hex-символа SHA-256 полного session id и шестизначный ordinal с `000001`. После полной
+записи временного файла и `fsync` CLI публикует его через `link` без перезаписи,
+повторяя попытку при занятом имени. Общей блокировки журнала нет. `bind`/`unbind`
+сериализуются коротким per-session OS `flock` в `sessions/.locks/`; `--force` не
+обходит блокировку. Legacy `ACTIVE`/`LOCK` остаются gitignored: первый снимается только
+после соответствующего `bind` без `LOCK`. Второй удаляют вручную после проверки
+неактивности старой сессии, затем повторяют соответствующий `bind`.
+Подробнее о создании задач и валидации — в операционном контракте.
 
 ## Команды
 

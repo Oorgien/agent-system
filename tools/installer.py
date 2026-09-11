@@ -26,7 +26,7 @@ def blocks():
     return {
         'AGENTS.md': f'{BEGIN}\n{instruction}\n{END}\n'.encode(),
         'CLAUDE.md': f'{BEGIN}\n{instruction}\nAlso read `AGENTS.md` for the existing project rules.\n{END}\n'.encode(),
-        '.gitignore': f'{GBEGIN}\n/.agents/memory\n/.agents/state/sessions/\n/.agents/runs.jsonl\n{GEND}\n'.encode(),
+        '.gitignore': f'{GBEGIN}\n/.agents/memory\n/.agents/state/sessions/\n/.agents/state/ACTIVE\n/.agents/state/LOCK\n/.agents/runs.jsonl\n{GEND}\n'.encode(),
     }
 
 

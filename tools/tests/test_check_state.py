@@ -99,6 +99,27 @@ class TestCheckState(unittest.TestCase):
         self.assertIn("не совпадает с именем каталога", r.stdout)
         self.assertIn("недопустимое значение", r.stdout)
 
+    def test_gitkeep_markers_are_not_tasks_or_records(self):
+        (self.tasks / ".gitkeep").touch()
+        task = self.task("good")
+        (task / "journal/.gitkeep").touch()
+        self.bind("sid-good", "good")
+        (self.tmp / ".agents/state/sessions/.gitkeep").touch()
+        out = self.run_check(session="sid-good")
+        self.assertEqual(out.returncode, 0, out.stdout)
+        self.assertIn("привязан к задаче: good", out.stdout)
+
+    def test_corrupt_task_utf8_does_not_hide_valid_binding(self):
+        bad = self.task("bad")
+        (bad / "task.md").write_bytes(b"\xff")
+        self.task("good")
+        self.bind("sid-good", "good")
+        out = self.run_check(session="sid-good")
+        self.assertEqual(out.returncode, 1, out.stdout)
+        self.assertIn("bad", out.stdout)
+        self.assertIn("UTF-8", out.stdout)
+        self.assertIn("привязан к задаче: good", out.stdout)
+
     def test_unparsable_journal_entry_name_is_an_error(self):
         d = self.task("task-a")
         (d / "journal" / "notes.md").write_text("x", encoding="utf-8")
@@ -111,7 +132,7 @@ class TestCheckState(unittest.TestCase):
         (d / "journal" / "20260910T142233Z-019a3f7c.md").write_text(
             "---\nsession: 019a3f7c\nat: 2026-09-10T14:22:33Z\n---\n\nтекст\n",
             encoding="utf-8")
-        (d / "journal" / "20260910T142233Z-019a3f7c-2.md").write_text("x", encoding="utf-8")
+        (d / "journal" / "20260910T142233Z-019a3f7c-2.md").write_text("---\nsession: 019a3f7c\nat: 2026-09-10T14:22:33Z\n---\n\nsecond\n", encoding="utf-8")
         r = self.run_check(session="sid-1")
         self.assertEqual(r.returncode, 0, r.stdout)
 

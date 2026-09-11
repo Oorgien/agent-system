@@ -142,6 +142,8 @@ def task_bind(root, sid, slug, force, harness_name):
     print({'created': f'Привязано: {sid} -> {slug}',
            'unchanged': f'Уже привязано: {sid} -> {slug}',
            'rebound': f'Перепривязано: {sid} -> {slug}'}[result])
+    if ts.read_text(root, ts.state_dir(root) / 'LOCK') is not None:
+        print('WARN: legacy LOCK сохранён; проверьте владельца и завершите старую сессию перед ручным удалением.')
     for name in ts.drop_legacy(root, slug):
         print(f'Удалён устаревший .agents/state/{name}: его роль забрал sessions/')
     return 0
@@ -183,6 +185,16 @@ def task_checkpoint(root, sid, slug, stage, message):
     return 0
 
 
+def task_journal(root, sid, slug):
+    if slug is None:
+        resolution = ts.resolve(root, sid)
+        if resolution.kind != 'bound':
+            raise Conflict('Чат не привязан: укажите задачу явно или выполните task bind')
+        slug = resolution.slug
+    print(ts.read_journal(root, slug), end='')
+    return 0
+
+
 def task_set_status(root, slug, status):
     """Смена status — единственная операция с настоящим read-modify-write (AGENTS.md §8)."""
     ts.set_status(root, slug, status)
@@ -221,6 +233,8 @@ def add_task_commands(sub):
     point.add_argument('--stage', default=None)
     point.add_argument('--message', default=None,
                        help='текст записи; без него читается со stdin')
+    journal = inner.add_parser('journal', parents=[common])
+    journal.add_argument('slug', nargs='?')
     status = inner.add_parser('set-status', parents=[common])
     status.add_argument('slug')
     status.add_argument('status', choices=ts.STATUSES)
@@ -229,8 +243,8 @@ def add_task_commands(sub):
 
 def run_task(args, root):
     explicit = getattr(args, 'session_id', None)
-    sid = explicit or ts.session_id()
-    if explicit:
+    sid = explicit if explicit is not None else ts.session_id()
+    if explicit is not None:
         ts.validate_session(sid)
     if args.task_command == 'list':
         return task_list(root)
@@ -242,6 +256,8 @@ def run_task(args, root):
         return task_bind(root, sid, args.slug, args.force, ts.harness())
     if args.task_command == 'unbind':
         return task_unbind(root, sid)
+    if args.task_command == 'journal':
+        return task_journal(root, sid, args.slug)
     if args.task_command == 'checkpoint':
         return task_checkpoint(root, sid, args.slug, args.stage, args.message)
     return task_set_status(root, args.slug, args.status)

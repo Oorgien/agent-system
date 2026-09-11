@@ -93,7 +93,7 @@ class TestCLI(unittest.TestCase):
         target = self.repo/'.agents/skills'
         self.assertFalse((target/'private-helper').exists())
         self.assertFalse((target/'.DS_Store').exists())
-        for name in ('checkpoint', 'tdd', 'debugging', 'code-review', 'migrate-memory'):
+        for name in ('checkpoint', 'migrate-memory'):
             expected = {path: data for path, data in tree(self.source/'skills'/name).items()
                         if '.DS_Store' not in Path(path).parts}
             self.assertEqual(expected, tree(target/name))
@@ -162,7 +162,7 @@ class TestCLI(unittest.TestCase):
         self.install()
         self.assertTrue((self.repo/'AGENTS.md').read_bytes().startswith(b'Existing rules\r\n'))
         self.assertEqual((other/'SKILL.md').read_text(),'custom skill')
-        self.assertTrue((self.repo/'.claude/skills/tdd').is_symlink())
+        self.assertTrue((self.repo/'.claude/skills/checkpoint').is_symlink())
         self.cli('doctor')
 
     def test_adopts_existing_shared_skill_link_without_ownership(self):
@@ -174,7 +174,7 @@ class TestCLI(unittest.TestCase):
         self.assertNotIn('.claude/skills',m['links'])
 
     def test_conflict_causes_no_writes_or_config_changes(self):
-        conflict=self.repo/'.agents/skills/tdd';conflict.mkdir(parents=True)
+        conflict=self.repo/'.agents/skills/checkpoint';conflict.mkdir(parents=True)
         (conflict/'notes').write_text('mine')
         before=tree(self.repo);cfg=(self.repo/'.git/config').read_bytes()
         self.cli('init',code=1)
@@ -224,7 +224,7 @@ class TestCLI(unittest.TestCase):
 
     def test_local_edits_block_update(self):
         self.install()
-        f=self.repo/'.agents/skills/tdd/SKILL.md';f.write_text(f.read_text()+'\nlocal edit')
+        f=self.repo/'.agents/skills/checkpoint/SKILL.md';f.write_text(f.read_text()+'\nlocal edit')
         before=tree(self.repo)
         self.cli('update',code=1);self.cli('doctor',code=1)
         self.assertEqual(before,tree(self.repo))
@@ -331,8 +331,8 @@ class TestCLI(unittest.TestCase):
         self.install()
         block = (self.repo/'.gitignore').read_text()
         self.assertIn('/.agents/state/sessions/', block)
-        self.assertNotIn('/.agents/state/ACTIVE', block)
-        self.assertNotIn('/.agents/state/LOCK', block)
+        self.assertIn('/.agents/state/ACTIVE', block)
+        self.assertIn('/.agents/state/LOCK', block)
         (self.repo/'.agents/state/sessions').mkdir(parents=True, exist_ok=True)
         (self.repo/'.agents/state/sessions/sid-1').write_text('{}')
         self.assertTrue(self.ignored('.agents/state/sessions/sid-1'))
@@ -364,6 +364,50 @@ class TestCLI(unittest.TestCase):
         out = self.cli('task','list',env=self.chat('chat-one'))
         self.assertIn('chat-one, chat-two', out.stdout)
         self.cli('doctor')
+
+    def test_journal_reader_handles_bound_explicit_and_legacy_entries(self):
+        self.install()
+        self.cli('task', 'new', 'reading')
+        self.cli('task', 'bind', 'reading', env=self.chat('short'))
+        task = self.repo/'.agents/state/tasks/reading'
+        (task/'journal.md').write_text('LEGACY_DECISION\n')
+        for n in (1, 2, 10):
+            suffix = '' if n == 1 else f'-{n}'
+            (task/'journal'/f'20260910T120000Z-short{suffix}.md').write_text(
+                f'---\nsession: short\nat: 2026-09-10T12:00:00Z\n---\nOLD_{n}\n')
+        self.cli('task', 'checkpoint', '--message', 'NEW_DECISION', env=self.chat('short'))
+        bound = self.cli('task', 'journal', env=self.chat('short')).stdout
+        explicit = self.cli('task', 'journal', 'reading', env=self.chat('unbound')).stdout
+        self.assertEqual(bound, explicit)
+        positions = [bound.index(word) for word in ('LEGACY_DECISION', 'OLD_1\n', 'OLD_2\n', 'OLD_10\n', 'NEW_DECISION')]
+        self.assertEqual(positions, sorted(positions))
+        before = tree(task)
+        self.cli('task', 'journal', 'reading')
+        self.assertEqual(tree(task), before)
+
+    def test_corrupt_journal_fails_reader_and_doctor(self):
+        self.install()
+        self.cli('task', 'new', 'reading')
+        self.cli('task', 'checkpoint', 'reading', '--message', 'VALID_SECRET_DECISION', env=self.chat('sid'))
+        (self.repo/'.agents/state/tasks/reading/journal/broken.md').write_text('partial')
+        out = self.cli('task', 'journal', 'reading', code=2)
+        self.assertNotIn('VALID_SECRET_DECISION', out.stdout)
+        self.assertIn('broken.md', out.stderr)
+        self.cli('doctor', code=1)
+
+    def test_explicit_checkpoint_rejects_missing_done_and_invalid_stage(self):
+        self.install()
+        self.cli('task', 'new', 'finished')
+        self.cli('task', 'set-status', 'finished', 'done')
+        for slug in ('missing', 'finished'):
+            self.cli('task', 'checkpoint', slug, '--message', 'not saved', env=self.chat('sid'), code=2)
+        self.assertFalse((self.repo/'.agents/state/tasks/missing').exists())
+        self.assertEqual(list((self.repo/'.agents/state/tasks/finished/journal').iterdir()), [])
+        self.cli('task', 'set-status', 'finished', 'active')
+        self.cli('task', 'checkpoint', 'finished', '--stage', 'a\nsession: replacement',
+                 '--message', 'not saved', env=self.chat('sid'), code=2)
+        self.assertEqual(list((self.repo/'.agents/state/tasks/finished/journal').iterdir()), [])
+        self.cli('task', 'checkpoint', 'finished', '--message', 'saved', env=self.chat('sid'))
 
     def test_rebinding_another_task_requires_an_explicit_command(self):
         self.install()
@@ -397,8 +441,12 @@ class TestCLI(unittest.TestCase):
         out = self.cli('task','status',env=self.chat('chat-one'))
         self.assertIn('LEGACY', out.stdout)
         self.cli('task','bind',env=self.chat('chat-one'))   # без slug: берётся из ACTIVE
+        self.assertTrue((state/'ACTIVE').exists())
+        self.assertTrue((state/'LOCK').exists())
+        # Owner confirmed stopped: manual cleanup, then matching bind migrates ACTIVE.
+        (state/'LOCK').unlink()
+        self.cli('task','bind',env=self.chat('chat-one'))
         self.assertFalse((state/'ACTIVE').exists())
-        self.assertFalse((state/'LOCK').exists())
         record = json.loads((state/'sessions/chat-one').read_text())
         self.assertEqual(record['slug'], 'task-a')
 
