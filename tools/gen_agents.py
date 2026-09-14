@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Генератор нативных определений агентов из канона.
 
-    .agents/agents/*.md  ->  .claude/agents/*.md
-                             .codex/agents/*.toml
+    agents/*.md          ->  .claude/agents/*.md      в этом репозитории
+    .agents/agents/*.md  ->  .codex/agents/*.toml     в подключённом проекте
 
 Использование:
     gen_agents.py            сгенерировать и записать
@@ -26,7 +26,10 @@ from adapters import claude as claude_adapter         # noqa: E402
 from adapters import codex as codex_adapter           # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-CANON_DIR = ROOT / ".agents" / "agents"
+# Канон пакета лежит в источниках этого репозитория; в подключённом проекте
+# installer кладёт его копию в .agents/agents/, и оттуда же генерирует `update`.
+CANON_DIR = ROOT / "agents"
+INSTALLED_CANON = Path(".agents/agents")
 ADAPTERS = [claude_adapter, codex_adapter]
 
 REQUIRED = ["name", "description", "role", "models", "effort", "capabilities"]
@@ -83,10 +86,20 @@ def validate(a, path):
                 f"поведения, и вместе с ними — регрессия, объясняющая их существование.")
 
 
-def build(root=None, names=None):
-    """Возвращает ({путь: содержимое}, [предупреждения])."""
+def build(canon_dir=None, names=None, source_dir=None):
+    """Возвращает ({путь: содержимое}, [предупреждения]).
+
+    `canon_dir` — откуда читать канон: по умолчанию источники пакета (`agents/`),
+    для подключённого проекта — `<root>/.agents/agents`. Вызывающий задаёт его явно;
+    по пути корня генератор не угадывает.
+    `source_dir` — путь канона, который пишется в шапку GENERATED. По умолчанию
+    соответствует `canon_dir`; installer читает канон отсюда, а пишет в проект,
+    где тот лежит в `.agents/agents/`, — и передаёт INSTALLED_CANON явно.
+    """
     files, warnings = {}, []
-    canon_dir = Path(root) / ".agents" / "agents" if root is not None else CANON_DIR
+    canon_dir = CANON_DIR if canon_dir is None else Path(canon_dir)
+    if source_dir is None:
+        source_dir = Path("agents") if canon_dir == CANON_DIR else INSTALLED_CANON
     canon = sorted(canon_dir.glob("*.md"))
     if names is not None:
         canon = [p for p in canon if p.stem in names]
@@ -96,7 +109,7 @@ def build(root=None, names=None):
     for path in canon:
         agent = load(path)
         for ad in ADAPTERS:
-            text, warns = ad.render(agent)
+            text, warns = ad.render(agent, source_dir=source_dir)
             files[Path(ad.TARGET_DIR) / f"{agent['name']}{ad.EXT}"] = text
             warnings.extend(warns)
     return files, warnings
@@ -128,12 +141,14 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true",
                     help="не менять файлы; выйти с кодом 1 при расхождении")
-    ap.add_argument("--project", type=Path, default=ROOT)
+    ap.add_argument("--project", type=Path, default=None,
+                    help="подключённый проект: канон берётся из его .agents/agents/")
     args = ap.parse_args()
-    root = args.project.resolve()
+    root = ROOT if args.project is None else args.project.resolve()
+    canon_dir = CANON_DIR if args.project is None else root / INSTALLED_CANON
 
     try:
-        files, warnings = build(root)
+        files, warnings = build(canon_dir)
     except (SchemaError, Inexpressible, RenderError,
             frontmatter.FrontmatterError) as e:
         print(f"ОШИБКА: {e}", file=sys.stderr)

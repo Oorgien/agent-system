@@ -60,17 +60,22 @@ git clone <приватный-remote> ~/.agents-memory/<key>
 ## Что здесь есть
 
 ```
-.agents/agents/     три роли: explorer, implementer, reviewer  (canonical)
-.agents/skills/     локальные скиллы агента для разработки CLI
-skills/             checkpoint и migrate-memory → .agents/skills/ целевого проекта
-.agents/state/      tasks/<slug>/task.md + journal/<ts>-<hash32>-<ordinal6>.md
-                    sessions/<session-id>  привязка чата к задаче   (gitignored)
-tools/              генератор, адаптеры, валидатор состояния, тесты
-.claude/agents/     GENERATED
+agents/             три роли: explorer, implementer, reviewer  (canonical) → .agents/agents/
+templates/          task.md, entry.md                          → .agents/state/templates/
+skills/             checkpoint и migrate-memory                → .agents/skills/
+resources/          contract.md                                → .agents/agent-system/
+tools/              генератор, адаптеры, installer, валидатор состояния, тесты
+bin/agent-system    точка входа CLI
+.claude/agents/     GENERATED из agents/ — роли для работы над этим репозиторием
 .codex/agents/      GENERATED
 ```
 
-В клоне CLI вся `.agents/` — локальные материалы разработки, gitignored.
+Справа — куда installer кладёт источник в целевом проекте; там же лежит состояние:
+`.agents/state/tasks/<slug>/task.md` + `journal/<ts>-<hash32>-<ordinal6>.md` и
+`.agents/state/sessions/<session-id>` (привязка чата, gitignored).
+
+В клоне CLI вся `.agents/` — рабочее место агентов над самим CLI (локальные скиллы,
+память, задачи), gitignored вместе со ссылкой `.claude/skills`.
 В подключаемом проекте установленные определения и состояние задач можно коммитить;
 исключаются память, привязки, телеметрия и legacy `ACTIVE`/`LOCK` до миграции.
 Установщик сохраняет чужие скиллы проекта; локальные скиллы клона в поставку не входят.

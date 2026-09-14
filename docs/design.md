@@ -830,7 +830,7 @@ independent review → fix if needed → verify`, но без обязатель
 ## 15. Generator, adapters, drift
 
 ```text
-.agents/agents/*.md
+agents/*.md            (в подключённом проекте: .agents/agents/*.md)
         ├── .claude/agents/*.md
         └── .codex/agents/*.toml
 ```

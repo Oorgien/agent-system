@@ -40,7 +40,7 @@ def doctor(root):
         print('ERR: Claude skill root points elsewhere')
         errors = True
     names = {Path(n).stem for n in m["files"] if n.startswith(".agents/agents/")}
-    generated, warnings = gen_agents.build(root, names=names)
+    generated, warnings = gen_agents.build(root / gen_agents.INSTALLED_CANON, names=names)
     for name, content in generated.items():
         if str(name) not in m['files']:
             continue
@@ -61,7 +61,7 @@ def doctor(root):
 def task_template(root):
     """Шаблон задачи берётся из проекта; для свежего дерева — из исходников."""
     local = ts.state_dir(root) / "templates" / "task.md"
-    source = SOURCE / ".agents/state/templates/task.md"
+    source = SOURCE / "templates/task.md"
     return (local if local.is_file() else source).read_text(encoding="utf-8")
 
 

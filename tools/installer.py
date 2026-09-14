@@ -45,14 +45,15 @@ def split_block(data, name):
 
 def bundle(source):
     files = {}
-    for directory in ['.agents/agents', '.agents/state/templates']:
+    # Package sources live at the repo top level; .agents/ here is the agents' own
+    # workspace and is never shipped. Installed layout keeps everything under .agents/.
+    for directory, installed in [('agents', '.agents/agents'), ('templates', '.agents/state/templates')]:
         for name, data in tree_files(source / directory).items():
-            files[f'{directory}/{name}'] = data
-    # Local .agents/skills belongs to development; ship only the public bundle.
+            files[f'{installed}/{name}'] = data
     for name, data in tree_files(source / 'skills').items():
         if '.DS_Store' not in Path(name).parts:
             files[f'.agents/skills/{name}'] = data
-    generated, warnings = gen_agents.build(source)
+    generated, warnings = gen_agents.build(source / 'agents', source_dir=gen_agents.INSTALLED_CANON)
     files.update({str(p): t.encode() for p,t in generated.items()})
     files[CONTRACT] = (source / 'resources/contract.md').read_bytes()
     fp = digest(dump({n: digest(b) for n,b in sorted({**files, **blocks()}.items())}))

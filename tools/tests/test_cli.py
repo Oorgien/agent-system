@@ -144,7 +144,7 @@ class TestCLI(unittest.TestCase):
         (task/'journal.md').write_text('Logs to revisit later.\n')
         before = tree(task)
         self.install()
-        src = self.source/'.agents/agents/reviewer.md'
+        src = self.source/'agents/reviewer.md'
         src.write_text(src.read_text()+'\nExtra instruction.\n')
         self.cli('update')
         out = self.cli('doctor')
@@ -213,7 +213,7 @@ class TestCLI(unittest.TestCase):
     def test_update_preserves_user_text_and_updates_bundle(self):
         self.install()
         f=self.repo/'AGENTS.md';f.write_bytes(b'new user rule\n'+f.read_bytes()+b'\nuser footer')
-        src=self.source/'.agents/agents/reviewer.md';src.write_text(src.read_text()+'\nNew review instruction.\n')
+        src=self.source/'agents/reviewer.md';src.write_text(src.read_text()+'\nNew review instruction.\n')
         self.cli('init',code=1)
         self.cli('update','--dry-run')
         self.assertNotIn('New review instruction',(self.repo/'.agents/agents/reviewer.md').read_text())
@@ -232,7 +232,7 @@ class TestCLI(unittest.TestCase):
     def test_update_removes_only_owned_orphans(self):
         self.install()
         foreign=self.repo/'.codex/agents/foreign.toml';foreign.write_text('mine')
-        (self.source/'.agents/agents/reviewer.md').unlink()
+        (self.source/'agents/reviewer.md').unlink()
         self.cli('update')
         self.assertFalse((self.repo/'.codex/agents/reviewer.toml').exists())
         self.assertEqual(foreign.read_text(),'mine')

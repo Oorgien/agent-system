@@ -319,7 +319,7 @@ class TestResolution(Base):
 
 class TestTaskFile(Base):
     def test_create_task_from_template(self):
-        template = (TOOLS.parent / ".agents/state/templates/task.md").read_text(encoding="utf-8")
+        template = (TOOLS.parent / "templates/task.md").read_text(encoding="utf-8")
         ts.create_task(self.root, "task-new", template, branch="feature-x",
                        moment=datetime(2026, 9, 10, tzinfo=timezone.utc))
         meta, err = ts.task_meta(self.root, "task-new")

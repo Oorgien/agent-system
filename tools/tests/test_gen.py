@@ -216,7 +216,7 @@ class TestGeneratorEndToEnd(unittest.TestCase):
         self.assertEqual(files1, files2)
 
     def test_check_detects_drift(self):
-        canon = ROOT / ".agents" / "agents" / "reviewer.md"
+        canon = ROOT / "agents" / "reviewer.md"
         backup = canon.read_text(encoding="utf-8")
         try:
             canon.write_text(backup.replace("effort: high", "effort: low"), encoding="utf-8")
