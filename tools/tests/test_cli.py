@@ -150,7 +150,7 @@ class TestCLI(unittest.TestCase):
         out = self.cli('doctor')
         self.assertEqual(tree(task), before)
         self.assertFalse((self.repo/'.agents/state/ACTIVE').exists())
-        self.assertNotIn('активная задача: finished', out.stdout)
+        self.assertNotIn('active task: finished', out.stdout)
         tracked = subprocess.run(['git', '-C', str(self.repo), 'check-ignore', str(task/'journal.md')], capture_output=True)
         self.assertEqual(tracked.returncode, 1)
 
@@ -164,6 +164,30 @@ class TestCLI(unittest.TestCase):
         self.assertEqual((other/'SKILL.md').read_text(),'custom skill')
         self.assertTrue((self.repo/'.claude/skills/checkpoint').is_symlink())
         self.cli('doctor')
+
+    def test_preserves_foreign_skill_links_from_skill_manager(self):
+        cache=self.base/'cache/domain-modeling';cache.mkdir(parents=True)
+        (cache/'SKILL.md').write_text('---\nname: domain-modeling\n---\nforeign')
+        (self.repo/'.agents/skills').mkdir(parents=True)
+        (self.repo/'.agents/skills/domain-modeling').symlink_to(cache)
+        (self.repo/'.claude/skills').mkdir(parents=True)
+        (self.repo/'.claude/skills/domain-modeling').symlink_to('../../.agents/skills/domain-modeling')
+        self.install(); self.cli('doctor')
+        self.assertEqual(os.readlink(self.repo/'.agents/skills/domain-modeling'),str(cache))
+        self.assertEqual((cache/'SKILL.md').read_text(),'---\nname: domain-modeling\n---\nforeign')
+        self.assertTrue((self.repo/'.claude/skills/checkpoint').is_symlink())
+        self.cli('update'); self.cli('doctor')
+        self.assertTrue((self.repo/'.agents/skills/domain-modeling').is_symlink())
+
+    def test_foreign_link_named_as_our_skill_is_a_conflict(self):
+        cache=self.base/'cache/checkpoint';cache.mkdir(parents=True)
+        (cache/'SKILL.md').write_text('foreign')
+        (self.repo/'.agents/skills').mkdir(parents=True)
+        (self.repo/'.agents/skills/checkpoint').symlink_to(cache)
+        before=tree(self.repo)
+        self.cli('init',code=1)
+        self.assertEqual(before,tree(self.repo));self.assertEqual((cache/'SKILL.md').read_text(),'foreign')
+        self.assertFalse((self.base/'store').exists())
 
     def test_adopts_existing_shared_skill_link_without_ownership(self):
         (self.repo/'.agents/skills').mkdir(parents=True)
@@ -317,7 +341,7 @@ class TestCLI(unittest.TestCase):
         self.assertFalse(installer.pending_path(self.repo).exists())
 
 
-    # --- задачи и привязки чатов -------------------------------------------
+    # --- tasks and chat bindings -------------------------------------------
 
     def chat(self, sid):
         return dict(self.env, AGENTS_SESSION_ID=sid)
@@ -344,7 +368,7 @@ class TestCLI(unittest.TestCase):
         task = self.repo/'.agents/state/tasks/task-a'
         self.assertIn('id: task-a', (task/'task.md').read_text())
 
-        # Единственный кандидат предлагается, но молча не привязывается.
+        # Suggest the sole candidate, but do not silently bind it.
         out = self.cli('task','status',env=self.chat('chat-one'))
         self.assertIn('task bind task-a', out.stdout)
         self.assertFalse((self.repo/'.agents/state/sessions/chat-one').exists())
@@ -353,10 +377,10 @@ class TestCLI(unittest.TestCase):
         record = json.loads((self.repo/'.agents/state/sessions/chat-one').read_text())
         self.assertEqual(record['slug'], 'task-a')
 
-        # Два чата на одной задаче — норма, и записи журнала не сталкиваются.
+        # Two chats on one task are normal, and journal entries do not collide.
         self.cli('task','bind','task-a',env=self.chat('chat-two'))
         for sid in ('chat-one','chat-two'):
-            self.cli('task','checkpoint','--message',f'запись {sid}',env=self.chat(sid))
+            self.cli('task','checkpoint','--message',f'entry {sid}',env=self.chat(sid))
         entries = sorted(p.name for p in (task/'journal').iterdir())
         self.assertEqual(len(entries), 2)
         self.assertEqual(len(set(entries)), 2)
@@ -424,10 +448,10 @@ class TestCLI(unittest.TestCase):
         self.install()
         self.cli('task','new','task-a')
         self.cli('task','bind','task-a',env=self.chat('chat-one'))
-        self.cli('task','checkpoint','--message','работа сделана',env=self.chat('chat-one'))
+        self.cli('task','checkpoint','--message','work completed',env=self.chat('chat-one'))
         out = self.cli('task','set-status','task-a','done')
         self.assertIn('chat-one', out.stdout)
-        self.cli('doctor',code=1)                     # привязка к завершённой задаче
+        self.cli('doctor',code=1)                     # binding to a finished task
         self.cli('task','unbind',env=self.chat('chat-one'))
         self.cli('doctor')
         self.assertEqual(len(list((self.repo/'.agents/state/tasks/task-a/journal').iterdir())), 1)
@@ -440,7 +464,7 @@ class TestCLI(unittest.TestCase):
         (state/'LOCK').write_text('claude\n')
         out = self.cli('task','status',env=self.chat('chat-one'))
         self.assertIn('LEGACY', out.stdout)
-        self.cli('task','bind',env=self.chat('chat-one'))   # без slug: берётся из ACTIVE
+        self.cli('task','bind',env=self.chat('chat-one'))   # no slug: use ACTIVE
         self.assertTrue((state/'ACTIVE').exists())
         self.assertTrue((state/'LOCK').exists())
         # Owner confirmed stopped: manual cleanup, then matching bind migrates ACTIVE.

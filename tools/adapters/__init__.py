@@ -1,17 +1,17 @@
 class Inexpressible(Exception):
-    """Каноническую границу нельзя выразить средствами харнесса.
+    """The harness cannot express the canonical access boundary.
 
-    Генерация обязана падать, а не выдавать конфигурацию с более широкими правами,
-    чем объявлено в каноне. Молчаливое расширение прав — худший из возможных исходов:
-    определение утверждает границу, которой на самом деле нет.
+    Generation must fail instead of producing a configuration with broader access
+    than the canonical definition declares. Silently widening access is the worst
+    outcome: the definition would claim a boundary that does not actually exist.
     """
 
 
 class RenderError(Exception):
-    """Сгенерированный файл не соответствует схеме харнесса.
+    """The generated file does not conform to the harness schema.
 
-    Отличается от Inexpressible: там канон не выразим в принципе, здесь — ошибка
-    самого адаптера. Проверяется на выходе, потому что валидность синтаксиса
-    (TOML разобрался) не означает валидности схемы (нужные ключи на месте
-    и текст промпта пережил сериализацию).
+    Unlike Inexpressible, which means the canonical definition cannot be expressed,
+    this indicates an adapter bug. Validate the output because valid syntax
+    (TOML parses) does not imply a valid schema (required keys are present
+    and the prompt text survived serialization).
     """

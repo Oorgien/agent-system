@@ -1,20 +1,20 @@
-"""Адаптер Claude Code: канон -> .claude/agents/<name>.md
+"""Claude Code adapter: canonical definitions -> .claude/agents/<name>.md
 
-Схема сабагента (документация Claude Code, «Subagents / Supported frontmatter
-fields»): обязательны `name` и `description`; из необязательных мы используем
-`tools`, `model` и `effort`.
+Subagent schema (Claude Code documentation, "Subagents / Supported frontmatter
+fields"): `name` and `description` are required; we also use the optional
+`tools`, `model`, and `effort` fields.
 
-Наблюдения этапа 5, реализованные здесь (docs/harness-differences.md):
+Phase 5 observations implemented here (docs/harness-differences.md):
 
-1. Границы доступа задаются СПИСКОМ ИНСТРУМЕНТОВ, а не песочницей. Поэтому
-   `shell` без `filesystem-write` невыразим: Bash немедленно возвращает запись
-   через `sed -i`. Генерация падает — см. Inexpressible.
+1. Access boundaries use a TOOL LIST rather than a sandbox. Thus `shell` without
+   `filesystem-write` cannot be expressed: Bash immediately restores write access
+   through `sed -i`. Generation fails; see Inexpressible.
 
-2. `effort` носитель ИМЕЕТ: одноимённое поле frontmatter, перекрывающее effort
-   сессии. Раньше адаптер утверждал обратное и выбрасывал значение с предупреждением,
-   из-за чего заданное в каноне усилие подменялось наследованием настроек сессии.
-   Расхождение осей между харнессами тут не в наличии носителя, а в наборе значений
-   и в том, что у Claude доступность уровня зависит от модели.
+2. `effort` DOES have a native field: the frontmatter field of the same name
+   overrides session effort. The adapter previously claimed otherwise and dropped
+   the value with a warning, replacing canonical effort with inherited session
+   settings. The harnesses differ in accepted values and Claude's model-dependent
+   availability of effort levels, not in whether such a field exists.
 """
 from pathlib import Path
 
@@ -23,7 +23,7 @@ from . import Inexpressible, RenderError
 TARGET_DIR = ".claude/agents"
 EXT = ".md"
 
-# Одна capability -> инструменты, которые её обеспечивают.
+# One capability -> the tools that provide it.
 CAP_TOOLS = {
     "filesystem-read":  ["Read"],
     "code-search":      ["Grep", "Glob"],
@@ -33,22 +33,22 @@ CAP_TOOLS = {
     "web":              ["WebFetch", "WebSearch"],
 }
 
-# Инструменты, дающие запись в ФС как побочный эффект.
+# Tools that grant filesystem write access as a side effect.
 WRITE_GRANTING = {"Bash", "Edit", "Write"}
 
 TOOL_ORDER = ["Read", "Grep", "Glob", "Edit", "Write", "Bash", "WebFetch", "WebSearch"]
 
-# Уровни effort у Claude Code (docs/en/model-config, «Adjust effort level») и их
-# поддержка моделями. Канон знает только low/medium/high — пересечение, доступное
-# везде; xhigh/max перечислены, чтобы таблица описывала ось целиком, а не наш срез.
+# Claude Code effort levels (docs/en/model-config, "Adjust effort level") and
+# model support. Canonical definitions only use low/medium/high, the shared subset;
+# xhigh/max are listed so the table describes the full range, not just our subset.
 #
-# Проверять совместимость обязательно ЗДЕСЬ: при неподдерживаемом уровне харнесс
-# молча понижает его до ближайшего поддерживаемого сверху вниз. Тихое понижение —
-# ровно тот исход, ради исключения которого генератор и написан: определение
-# утверждало бы усилие, которого на самом деле нет.
+# Compatibility MUST be checked HERE: the harness silently lowers an unsupported
+# effort level to the nearest supported level below it. Preventing that silent
+# downgrade is exactly why this generator exists: the definition would otherwise
+# claim an effort level that is not actually applied.
 #
-# VERIFY: таблица написана по документации и не проверялась запуском. Модели, которых
-# в ней нет, не считаются несовместимыми — они считаются НЕИЗВЕСТНЫМИ (предупреждение).
+# VERIFY: this table comes from documentation and has not been tested at runtime.
+# Unlisted models are UNKNOWN (warning), rather than assumed incompatible.
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
 FULL_RANGE = set(EFFORT_LEVELS)
 MODEL_EFFORT = {
@@ -68,20 +68,20 @@ def render(agent, source_dir=".agents/agents"):
     for c in caps:
         tools.update(CAP_TOOLS[c])
 
-    # --- проверка выразимости границы -------------------------------------
+    # --- check whether the boundary can be expressed -------------------------------------
     if "filesystem-write" not in caps:
         leaks = sorted(tools & WRITE_GRANTING)
         if leaks:
             via = ", ".join(sorted(c for c in caps if set(CAP_TOOLS[c]) & WRITE_GRANTING))
             raise Inexpressible(
-                f"агент '{agent['name']}': запрет записи невыразим в Claude Code.\n"
-                f"    capabilities не содержат 'filesystem-write', но '{via}' требует "
+                f"agent '{agent['name']}': Claude Code cannot express the write prohibition.\n"
+                f"    capabilities do not include 'filesystem-write', but '{via}' requires "
                 f"{', '.join(leaks)},\n"
-                f"    а через него запись возвращается (например `sed -i`).\n"
-                f"    У Claude границу задаёт список инструментов, а не песочница, "
-                f"поэтому read-only + shell выразить нечем.\n"
-                f"    Варианты: убрать '{via}' из capabilities, либо добавить "
-                f"'filesystem-write' и признать, что агент пишет."
+                f"    which restores write access (for example, `sed -i`).\n"
+                f"    Claude uses a tool list, not a sandbox, to define the boundary, "
+                f"so read-only + shell cannot be expressed.\n"
+                f"    Options: remove '{via}' from capabilities, or add "
+                f"'filesystem-write' and acknowledge that the agent can write."
             )
 
     effort = (agent.get("effort") or "").strip()
@@ -107,32 +107,32 @@ def render(agent, source_dir=".agents/agents"):
 
 
 def _check_effort(name, effort, model):
-    """Совместимость уровня усилия с моделью. Возвращает предупреждения."""
+    """Check effort-level compatibility with the model. Return warnings."""
     if not effort:
         return []
 
     if effort not in FULL_RANGE:
         raise RenderError(
-            f"агент '{name}': effort='{effort}' не является уровнем Claude Code "
+            f"agent '{name}': effort='{effort}' is not a Claude Code effort level "
             f"({', '.join(EFFORT_LEVELS)})"
         )
 
     supported = MODEL_EFFORT.get(model)
     if supported is None:
         return [
-            f"агент '{name}': модель '{model}' не описана в таблице уровней effort — "
-            f"effort='{effort}' перенесён как есть, совместимость не проверена "
+            f"agent '{name}': model '{model}' is not listed in the effort-level table — "
+            f"effort='{effort}' copied unchanged; compatibility has not been checked "
             f"(VERIFY, adapters/claude.py)"
         ]
 
     if effort not in supported:
         raise RenderError(
-            f"агент '{name}': модель '{model}' не поддерживает effort='{effort}' "
-            f"(поддерживается: {', '.join(l for l in EFFORT_LEVELS if l in supported)}).\n"
-            f"    Харнесс понизил бы уровень молча, и определение утверждало бы усилие, "
-            f"которого нет.\n"
-            f"    Варианты: понизить effort в каноне либо выбрать модель, "
-            f"поддерживающую этот уровень."
+            f"agent '{name}': model '{model}' does not support effort='{effort}' "
+            f"(supported: {', '.join(l for l in EFFORT_LEVELS if l in supported)}).\n"
+            f"    The harness would silently lower the level, and the definition would claim effort "
+            f"that is not applied.\n"
+            f"    Options: lower the canonical effort or choose a model "
+            f"that supports this level."
         )
 
     return []

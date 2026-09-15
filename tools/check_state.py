@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Проверка состояния задач — механическая часть процедуры старта из AGENTS.md §2.
+"""Task-state checks: the mechanical part of startup in AGENTS.md §2.
 
-    check_state.py            проверить состояние
-    check_state.py --resolve  то же + показать, что видит текущий чат
+    check_state.py            check state
+    check_state.py --resolve  also show what the current chat sees
 
-Проверяет ровно то, что AGENTS.md требует проверять перед загрузкой задачи, и по тем же
-правилам. Главное из них: битая привязка НЕ чинится автоматически и задача по ней не
-загружается — загрузить чужую задачу хуже, чем не выбрать никакую.
+Check exactly what AGENTS.md requires before loading a task, using the same rules.
+Most importantly, broken bindings are NOT repaired automatically and their tasks
+are not loaded: loading another chat's task is worse than choosing none.
 
-Скрипт ничего не чинит и ничего не пишет: он только сообщает.
+This script only reports; it neither repairs nor writes anything.
 """
 import argparse
 import os
@@ -53,7 +53,7 @@ def git_branch():
 
 
 def git_config(key):
-    """Значение из ОБЩЕГО локального config. У worktrees он один (AGENTS.md §1)."""
+    """Value from the SHARED local config, common to all worktrees (AGENTS.md §1)."""
     try:
         r = subprocess.run(["git", "config", "--local", "--get", key],
                            cwd=ROOT, capture_output=True, text=True, timeout=5)
@@ -63,37 +63,38 @@ def git_config(key):
 
 
 def expected_memory():
-    """Куда симлинк обязан вести по сохранённым настройкам, либо None.
+    """The symlink target required by saved settings, or None.
 
-    Ожидаемое берётся ТОЛЬКО из сохранённого setup.sh состояния и никогда не
-    вычисляется из окружения валидатора: AGENTS_MEMORY_STORE задаётся ad hoc, а
-    старт сессии происходит без него, и вычисленное ожидание объявило бы
-    расхождением корректно настроенное дерево.
+    Derive the expected target ONLY from state saved by setup.sh, never from the
+    validator's environment. AGENTS_MEMORY_STORE is set ad hoc, while session
+    startup runs without it; deriving a target again would report a mismatch
+    in a correctly configured tree.
     """
     key, store = git_config("agents.memoryKey"), git_config("agents.memoryStore")
     return (Path(store) / key) if key and store else None
 
 
 def memory(r):
-    """Память проекта — безусловный шаг старта (AGENTS.md §2), проверяем всегда.
+    """Project memory is an unconditional startup step (AGENTS.md §2); always check it.
 
-    Отсутствие — WARN: симлинк gitignored, в CI и в свежем клоне его законно нет.
-    Ссылка на ЧУЖОЙ каталог при сохранённых настройках — ERR: это не «памяти нет»,
-    а «читается не та память», и работать молча в таком дереве нельзя. Так выглядит
-    worktree, в котором не повторили setup после смены ключа или хранилища.
+    Absence is a WARN: the symlink is gitignored and may legitimately be missing
+    in CI or a fresh clone. A link to the WRONG directory when settings are saved
+    is an ERR: the tree reads the wrong memory, rather than having none, so work
+    must not silently proceed. This happens when setup was not rerun in a worktree
+    after the key or store changed.
     """
     if not MEMORY.is_symlink():
         if MEMORY.is_dir():
-            r.add(WARN, ".agents/memory — каталог, а не симлинк на общее хранилище "
-                        "(память не будет общей для worktrees, см. AGENTS.md §1)")
+            r.add(WARN, ".agents/memory — a directory, not a symlink to the shared store "
+                        "(memory will not be shared across worktrees; see AGENTS.md §1)")
         else:
-            r.add(WARN, ".agents/memory отсутствует — память проекта недоступна, "
-                        "запустите ./setup.sh")
+            r.add(WARN, ".agents/memory is missing — project memory is unavailable, "
+                        "run ./setup.sh")
         return
 
     if not MEMORY.exists():
-        r.add(WARN, f".agents/memory — битый симлинк на {os.readlink(MEMORY)}, "
-                    f"запустите ./setup.sh")
+        r.add(WARN, f".agents/memory — broken symlink to {os.readlink(MEMORY)}, "
+                    f"run ./setup.sh")
         return
 
     actual = MEMORY.resolve()
@@ -105,22 +106,22 @@ def memory(r):
     if expected is None:
         return
 
-    # resolve() у самой ссылки, а не у os.readlink(): относительная цель
-    # разрешается от каталога ссылки, а не от текущего каталога процесса.
+    # Call resolve() on the link, not os.readlink(): resolve relative targets
+    # from the link's directory, not the process's working directory.
     if actual != expected.resolve():
-        r.add(ERR, f".agents/memory ведёт в {actual}, а сохранённые настройки задают "
-                   f"{expected}. Дерево читает не ту память: повторите ./setup.sh здесь")
+        r.add(ERR, f".agents/memory points to {actual}, but saved settings specify "
+                   f"{expected}. The tree reads the wrong memory: rerun ./setup.sh here")
 
 
 def gc_candidates(root):
-    """Привязки, которые будущий GC вправе удалить, — единая точка обхода.
+    """Bindings eligible for future GC removal: a single scan implementation.
 
-    Сейчас функция только сообщает: чат мог быть привязан к задаче, которую завершили
-    из другого окна, и удалять его файл молча нельзя, пока никто не спросил. Когда GC
-    появится, он получит готовый обход и не будет переписан заново.
+    Currently this only reports: another window may have finished the bound task,
+    and the binding must not be silently removed without a request. Future GC can
+    reuse this scan instead of reimplementing it.
 
-    Возвращает [(session_id, record, причина)]. Живые чаты от мёртвых здесь не
-    отличаются: список процессов сессии — не наше знание.
+    Return [(session_id, record, reason)]. This does not distinguish live chats
+    from dead ones: session process information is outside our knowledge.
     """
     out = []
     records, _ = ts.bindings(root)
@@ -132,7 +133,7 @@ def gc_candidates(root):
 
 
 def tasks(r, root, branch):
-    """Целостность каждой задачи. Возвращает slug'и, к которым можно привязываться."""
+    """Check each task for integrity. Return slugs that accept bindings."""
     bindable = []
     for slug in ts.tasks(root):
         meta, err = ts.task_meta(root, slug)
@@ -144,64 +145,64 @@ def tasks(r, root, branch):
             r.add(ERR, problem)
         _, broken = ts.journal_entries(root, slug)
         for name in broken:
-            r.add(ERR, f"{slug}: имя или содержимое записи журнала не парсится: journal/{name} "
-                       f"(ожидаются целая запись и согласованные имя/session/at)")
+            r.add(ERR, f"{slug}: journal entry name or content cannot be parsed: journal/{name} "
+                       f"(expected a complete entry and matching filename/session/at)")
         if problems:
             continue
         if meta.get("status") in ts.BINDABLE:
             bindable.append(slug)
-            # Ветка — подсказка: несколько задач в одном дереве теперь норма.
+            # The branch is a hint: multiple tasks in one tree are now normal.
             if branch and meta.get("branch") and meta["branch"] != branch:
-                r.add(WARN, f"{slug}: branch='{meta['branch']}', а мы на '{branch}' — "
-                            f"подсказка устарела, это не ошибка")
+                r.add(WARN, f"{slug}: branch='{meta['branch']}', but the current branch is '{branch}' — "
+                            f"the hint is stale; this is not an error")
     return bindable
 
 
 def sessions(r, root):
     records, problems = ts.bindings(root)
     for problem in problems:
-        r.add(ERR, f"привязка не читается: {problem}")
+        r.add(ERR, f"binding cannot be read: {problem}")
     for sid, record, reason in gc_candidates(root):
-        r.add(ERR, f"чат {sid} привязан к задаче, к которой привязываться нельзя: {reason}")
+        r.add(ERR, f"chat {sid} is bound to an ineligible task: {reason}")
     stale = {sid for sid, _, _ in gc_candidates(root)}
     by_task = {}
     for sid, record in records.items():
-        if sid not in stale:            # о негодной привязке уже сообщили выше
+        if sid not in stale:            # the invalid binding was already reported above
             by_task.setdefault(record["slug"], []).append(sid)
     for slug in sorted(by_task):
-        r.add(OK, f"{slug}: привязанных чатов — {len(by_task[slug])} "
+        r.add(OK, f"{slug}: bound chats: {len(by_task[slug])} "
                   f"({', '.join(sorted(by_task[slug]))})")
     return records
 
 
 def legacy(r, root):
-    """Старые ACTIVE и LOCK: не ошибка, но и не состояние — их роль забрал sessions/."""
+    """Legacy ACTIVE and LOCK: not errors, but no longer state; sessions/ replaced them."""
     slug = ts.legacy_pointer(root)
     if slug:
-        r.add(WARN, f"остался .agents/state/ACTIVE='{slug}' — привяжите чат "
-                    f"(`agent-system task bind {slug}`), после этого указатель удаляется")
+        r.add(WARN, f"legacy .agents/state/ACTIVE='{slug}' remains — bind the chat "
+                    f"(`agent-system task bind {slug}`), the pointer is removed afterward")
     if (ts.state_dir(root) / "LOCK").exists():
-        r.add(WARN, "остался .agents/state/LOCK — проверьте владельца и остановите старую сессию перед ручным удалением")
+        r.add(WARN, "legacy .agents/state/LOCK remains — check its owner and stop the old session before removing it manually")
 
 
 def current(r, root, resolution):
     if resolution.kind == "no-session":
-        r.add(WARN, "session id не определён — работа без привязки. Задайте "
-                    "AGENTS_SESSION_ID или привяжите чат явно")
+        r.add(WARN, "session ID is unavailable — working without a binding. Set "
+                    "AGENTS_SESSION_ID or bind the chat explicitly")
     elif resolution.kind == "bound":
-        r.add(OK, f"чат {resolution.sid} привязан к задаче: {resolution.slug}")
+        r.add(OK, f"chat {resolution.sid} is bound to task: {resolution.slug}")
     elif resolution.kind == "invalid":
         for problem in resolution.problems:
-            r.add(ERR, f"привязка чата {resolution.sid} недействительна: {problem}. "
-                       f"НЕ загружать молча: перезапустить discovery")
+            r.add(ERR, f"binding for chat {resolution.sid} is invalid: {problem}. "
+                       f"Do NOT silently load it: restart discovery")
     elif resolution.kind == "suggest":
-        r.add(WARN, f"чат не привязан; единственный кандидат — {resolution.slug}. "
-                    f"Привязка не делается автоматически")
+        r.add(WARN, f"chat is unbound; the only candidate is — {resolution.slug}. "
+                    f"No binding is created automatically")
     elif resolution.kind == "ambiguous":
-        r.add(WARN, f"чат не привязан, активных задач несколько: "
-                    f"{', '.join(resolution.candidates)}. Автоматический выбор НЕ делается")
+        r.add(WARN, f"chat is unbound; multiple active tasks exist: "
+                    f"{', '.join(resolution.candidates)}. NO automatic selection is made")
     else:
-        r.add(WARN, "чат не привязан, активных задач нет")
+        r.add(WARN, "chat is unbound; no active tasks exist")
 
 
 def main(argv=None):
@@ -209,16 +210,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--resolve", action="store_true",
-                    help="показать, что видит текущий чат (по умолчанию тоже показывается)")
+                    help="show what the current chat sees (also shown by default)")
     ap.add_argument("--project", type=Path, default=ROOT)
-    ap.add_argument("--session-id", help="проверить от имени конкретного чата")
+    ap.add_argument("--session-id", help="check on behalf of a specific chat")
     args = ap.parse_args(argv)
     ROOT = args.project.resolve()
     MEMORY = ROOT / ".agents" / "memory"
 
     r = Report()
     branch = git_branch()
-    print(f"ветка: {branch or '(detached HEAD или не git)'}")
+    print(f"branch: {branch or '(detached HEAD or not a Git repository)'}")
 
     try:
         sid = args.session_id if args.session_id is not None else ts.session_id()
@@ -226,17 +227,17 @@ def main(argv=None):
             ts.validate_session(sid)
     except ts.StateError as e:
         print()
-        r.add(ERR, f"session id не принят: {e}")
+        r.add(ERR, f"session ID rejected: {e}")
         memory(r)
         return r.dump()
-    print(f"чат:   {sid or '(session id не определён)'}")
+    print(f"chat:  {sid or '(session ID unavailable)'}")
     print()
 
     try:
         slugs = ts.tasks(ROOT)
         bindings, binding_errors = ts.bindings(ROOT)
         if not slugs and not bindings and not binding_errors and not ts.legacy_pointer(ROOT):
-            r.add(OK, "задач нет, привязок нет — чистое состояние")
+            r.add(OK, "no tasks or bindings — clean state")
         tasks(r, ROOT, branch)
         sessions(r, ROOT)
         legacy(r, ROOT)

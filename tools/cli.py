@@ -59,7 +59,7 @@ def doctor(root):
 
 
 def task_template(root):
-    """Шаблон задачи берётся из проекта; для свежего дерева — из исходников."""
+    """Use the project task template, falling back to package sources for a fresh tree."""
     local = ts.state_dir(root) / "templates" / "task.md"
     source = SOURCE / "templates/task.md"
     return (local if local.is_file() else source).read_text(encoding="utf-8")
@@ -71,116 +71,116 @@ def describe(root, slug, records):
         return f'{slug:<24} ERR  {err}'
     chats = sorted(sid for sid, r in records.items() if r["slug"] == slug)
     entries, broken = ts.journal_entries(root, slug)
-    tail = f', чаты: {", ".join(chats)}' if chats else ''
-    tail += f', НЕРАЗБОРНЫХ ЗАПИСЕЙ: {len(broken)}' if broken else ''
+    tail = f', chats: {", ".join(chats)}' if chats else ''
+    tail += f', UNREADABLE ENTRIES: {len(broken)}' if broken else ''
     return (f'{slug:<24} {meta.get("status", "?"):<10} '
-            f'branch={meta.get("branch") or "-"}, записей: {len(entries)}{tail}')
+            f'branch={meta.get("branch") or "-"}, entries: {len(entries)}{tail}')
 
 
 def task_list(root):
     records, problems = ts.bindings(root)
     for problem in problems:
-        print(f'WARN: привязка не читается: {problem}')
+        print(f'WARN: binding cannot be read: {problem}')
     slugs = ts.tasks(root)
     if not slugs:
-        print('Задач нет')
+        print('No tasks')
     for slug in slugs:
         print(describe(root, slug, records))
     orphan = {sid: r for sid, r in records.items() if r["slug"] not in slugs}
     for sid, record in sorted(orphan.items()):
-        print(f'WARN: чат {sid} привязан к несуществующей задаче {record["slug"]!r}')
+        print(f'WARN: chat {sid} is bound to a nonexistent task {record["slug"]!r}')
     return 0
 
 
 def task_status(root, sid):
-    """Ничего не пишет: показывает то же, что видит сессия на старте (AGENTS.md §2)."""
+    """Read-only: show what a session sees at startup (AGENTS.md §2)."""
     r = ts.resolve(root, sid)
-    print(f'Проект: {root}')
-    print(f'Чат:    {sid or "(session id не определён)"}')
+    print(f'Project: {root}')
+    print(f'Chat:   {sid or "(session ID unavailable)"}')
     if r.legacy:
-        print(f'LEGACY: .agents/state/ACTIVE={r.legacy} — кандидат на привязку; '
-              f'снимается после `task bind`')
+        print(f'LEGACY: .agents/state/ACTIVE={r.legacy} — binding candidate; '
+              f'removed after `task bind`')
     if r.kind == 'no-session':
-        print('Привязки нет: харнесс не сообщил session id. Задайте AGENTS_SESSION_ID '
-              'или используйте `task bind --session-id <id>`')
+        print('No binding: the harness did not provide a session ID. Set AGENTS_SESSION_ID '
+              'or use `task bind --session-id <id>`')
     elif r.kind == 'bound':
-        print(f'Задача:  {r.slug} (привязано {r.record.get("bound_at")}, '
-              f'харнесс {r.record.get("harness")})')
+        print(f'Task:   {r.slug} (bound {r.record.get("bound_at")}, '
+              f'harness {r.record.get("harness")})')
     elif r.kind == 'invalid':
-        print(f'Привязка к {r.slug!r} НЕДЕЙСТВИТЕЛЬНА и автоматически не чинится:')
+        print(f'Binding to {r.slug!r} is INVALID and is not repaired automatically:')
         for problem in r.problems:
             print(f'  - {problem}')
     elif r.kind == 'suggest':
-        print(f'Привязки нет. Единственный кандидат: {r.slug} — '
-              f'`task bind {r.slug}` (молча не привязывается)')
+        print(f'No binding. The only candidate is: {r.slug} — '
+              f'`task bind {r.slug}` (no silent binding)')
     elif r.kind == 'ambiguous':
-        print('Привязки нет, активных задач несколько — выбор за вами:')
+        print('No binding; multiple active tasks exist — choose one:')
         for slug in r.candidates:
             print(f'  - {slug}')
     else:
-        print('Привязки нет, активных задач нет — `task new <slug>`')
+        print('No binding and no active tasks — `task new <slug>`')
     if r.kind in ('invalid', 'ambiguous') and r.candidates:
-        print('Кандидаты: ' + ', '.join(r.candidates))
+        print('Candidates: ' + ', '.join(r.candidates))
     return 1 if r.kind == 'invalid' else 0
 
 
 def task_bind(root, sid, slug, force, harness_name):
     if sid is None:
-        raise Conflict('session id не определён: задайте AGENTS_SESSION_ID или '
-                       'передайте --session-id')
+        raise Conflict('session ID unavailable: set AGENTS_SESSION_ID or '
+                       'pass --session-id')
     if slug is None:
         r = ts.resolve(root, sid)
-        # Legacy-указатель важнее discovery: он и есть то, чем этот чат жил раньше.
+        # The legacy pointer takes priority over discovery: it is this chat's former state.
         slug = r.legacy or (r.slug if r.kind in ('bound', 'suggest') else None)
         if slug is None:
-            raise Conflict('Задача не указана, и однозначного кандидата нет: ' +
-                           (', '.join(r.candidates) if r.candidates else 'активных задач нет'))
+            raise Conflict('No task specified and no unambiguous candidate: ' +
+                           (', '.join(r.candidates) if r.candidates else 'no active tasks'))
     problems = ts.binding_problems(root, slug)
     if problems:
         raise Conflict('; '.join(problems))
     result = ts.bind(root, sid, slug, harness_name=harness_name, force=force)
-    print({'created': f'Привязано: {sid} -> {slug}',
-           'unchanged': f'Уже привязано: {sid} -> {slug}',
-           'rebound': f'Перепривязано: {sid} -> {slug}'}[result])
+    print({'created': f'Bound: {sid} -> {slug}',
+           'unchanged': f'Already bound: {sid} -> {slug}',
+           'rebound': f'Rebound: {sid} -> {slug}'}[result])
     if ts.read_text(root, ts.state_dir(root) / 'LOCK') is not None:
-        print('WARN: legacy LOCK сохранён; проверьте владельца и завершите старую сессию перед ручным удалением.')
+        print('WARN: legacy LOCK preserved; check its owner and end the old session before removing it manually.')
     for name in ts.drop_legacy(root, slug):
-        print(f'Удалён устаревший .agents/state/{name}: его роль забрал sessions/')
+        print(f'Removed legacy .agents/state/{name}: sessions/ has replaced it')
     return 0
 
 
 def task_unbind(root, sid):
     if sid is None:
-        raise Conflict('session id не определён: задайте AGENTS_SESSION_ID или '
-                       'передайте --session-id')
-    print(f'Привязка снята: {sid}' if ts.unbind(root, sid) else f'Привязок не было: {sid}')
+        raise Conflict('session ID unavailable: set AGENTS_SESSION_ID or '
+                       'pass --session-id')
+    print(f'Unbound: {sid}' if ts.unbind(root, sid) else f'No binding existed: {sid}')
     return 0
 
 
 def task_new(root, slug, branch):
     directory = ts.create_task(root, slug, task_template(root), branch=branch)
-    print(f'Создано: {directory.relative_to(root)}/task.md')
-    print(f'Журнал:  {ts.journal_dir(root, slug).relative_to(root)}/ (записи появятся '
-          f'при первом checkpoint)')
-    print(f'Привязать текущий чат: agent-system task bind {slug}')
+    print(f'Created: {directory.relative_to(root)}/task.md')
+    print(f'Journal: {ts.journal_dir(root, slug).relative_to(root)}/ (entries will appear '
+          f'with the first checkpoint)')
+    print(f'Bind the current chat: agent-system task bind {slug}')
     return 0
 
 
 def task_checkpoint(root, sid, slug, stage, message):
-    """Новая запись журнала. Имя и фронтматтер собирает слой хранения: составленное
-    руками имя — это и есть тот самый гоночный счётчик, от которого мы ушли."""
+    """Create a journal entry. The storage layer builds its name and frontmatter:
+    constructing the name by hand would reintroduce the counter race we removed."""
     if sid is None:
-        raise Conflict('session id не определён: задайте AGENTS_SESSION_ID или '
-                       'передайте --session-id')
+        raise Conflict('session ID unavailable: set AGENTS_SESSION_ID or '
+                       'pass --session-id')
     if slug is None:
         r = ts.resolve(root, sid)
         if r.kind != 'bound':
-            raise Conflict('Чат не привязан к задаче: укажите её явно или '
+            raise Conflict('Chat is not bound to a task: specify it explicitly or run '
                            '`task bind <slug>`')
         slug = r.slug
     text = message if message is not None else sys.stdin.read()
     if not text.strip():
-        raise Conflict('Пустая запись не сохраняется')
+        raise Conflict('Empty entries are not saved')
     print(ts.write_entry(root, slug, sid, text, stage=stage).relative_to(root))
     return 0
 
@@ -189,35 +189,35 @@ def task_journal(root, sid, slug):
     if slug is None:
         resolution = ts.resolve(root, sid)
         if resolution.kind != 'bound':
-            raise Conflict('Чат не привязан: укажите задачу явно или выполните task bind')
+            raise Conflict('Chat is unbound: specify the task explicitly or run task bind')
         slug = resolution.slug
     print(ts.read_journal(root, slug), end='')
     return 0
 
 
 def task_set_status(root, slug, status):
-    """Смена status — единственная операция с настоящим read-modify-write (AGENTS.md §8)."""
+    """Changing status is the only real read-modify-write operation (AGENTS.md §8)."""
     ts.set_status(root, slug, status)
     print(f'{slug}: status -> {status}')
     if status not in ts.BINDABLE:
         records, _ = ts.bindings(root)
         stale = sorted(sid for sid, r in records.items() if r["slug"] == slug)
         for sid in stale:
-            print(f'WARN: чат {sid} остаётся привязан к завершённой задаче — '
+            print(f'WARN: chat {sid} remains bound to a finished task — '
                   f'`task unbind --session-id {sid}`')
     return 0
 
 
 def add_task_commands(sub):
-    # --project и --session-id принимаются и до, и после подкоманды: иначе
-    # `task status --project .` молчаливо ломается на разборе аргументов.
-    # SUPPRESS обязателен: без него разбор подкоманды затирает значение,
-    # заданное до неё, дефолтным None.
+    # Accept --project and --session-id before or after the subcommand; otherwise
+    # `task status --project .` silently fails during argument parsing.
+    # SUPPRESS is required: without it, parsing a subcommand replaces a value
+    # supplied earlier with the default None.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--project', type=Path, default=argparse.SUPPRESS)
     common.add_argument('--session-id', default=argparse.SUPPRESS,
-                        help='действовать от имени конкретного чата')
-    p = sub.add_parser('task', parents=[common], help='задачи и привязки чатов')
+                        help='act on behalf of a specific chat')
+    p = sub.add_parser('task', parents=[common], help='tasks and chat bindings')
     inner = p.add_subparsers(dest='task_command', required=True)
     for name in ('list', 'status', 'unbind'):
         inner.add_parser(name, parents=[common])
@@ -227,12 +227,12 @@ def add_task_commands(sub):
     bind = inner.add_parser('bind', parents=[common])
     bind.add_argument('slug', nargs='?')
     bind.add_argument('--force', action='store_true',
-                      help='перепривязать чат, уже привязанный к другой задаче')
+                      help='rebind a chat that is already bound to another task')
     point = inner.add_parser('checkpoint', parents=[common])
     point.add_argument('slug', nargs='?')
     point.add_argument('--stage', default=None)
     point.add_argument('--message', default=None,
-                       help='текст записи; без него читается со stdin')
+                       help='entry text; read from stdin if omitted')
     journal = inner.add_parser('journal', parents=[common])
     journal.add_argument('slug', nargs='?')
     status = inner.add_parser('set-status', parents=[common])
@@ -283,8 +283,8 @@ def main(argv=None):
             if not shutil.which(executable):
                 raise RuntimeError(f'Missing required executable: {executable}')
         root = resolve_root(getattr(args, 'project', None) or args.global_project or Path.cwd())
-        # Команды задач работают и в самом чекауте инструмента: у него своё
-        # состояние задач, и запрещать их здесь незачем.
+        # Task commands also work in the tool checkout: it has its own task state,
+        # so there is no reason to prohibit them here.
         if args.command == 'task':
             return run_task(args, root)
         if root == SOURCE.resolve():

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Тесты setup.sh: ключ проекта обязан быть общим для всех worktrees.
+"""setup.sh tests: the project key must be shared by all worktrees.
 
     python3 -m unittest discover tools/tests -v
 
-Работают на временной копии setup.sh во временном репозитории; ни исходное дерево,
-ни настоящее хранилище памяти не трогаются.
+Tests run a temporary copy of setup.sh in a temporary repository; neither the
+source tree nor the real memory store is touched.
 """
 import os
 import shutil
@@ -27,7 +27,7 @@ def git(*args, cwd):
         cwd=cwd, capture_output=True, text=True, check=True)
 
 
-@unittest.skipUnless(GIT and BASH, "нужны git и bash")
+@unittest.skipUnless(GIT and BASH, "git and bash are required")
 class TestProjectKey(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
@@ -53,11 +53,11 @@ class TestProjectKey(unittest.TestCase):
         return r
 
     def test_worktrees_share_one_memory_directory(self):
-        """Регрессия: ключ брался из basename текущего каталога.
+        """Regression: the key used to come from the current directory's basename.
 
-        При штатной раскладке repo/ и ../repo-billing/ это давало разные каталоги
-        памяти: знание, добытое в одном дереве, во втором не существовало, притом
-        что симлинки были на месте и ошибки не возникало.
+        With the usual repo/ and ../repo-billing/ layout, this produced different
+        memory directories: knowledge from one tree was missing in the other,
+        even though both symlinks existed and no error was reported.
         """
         repo = self.make_repo("repo")
         wt = self.tmp / "repo-billing"
@@ -120,7 +120,7 @@ class TestProjectKey(unittest.TestCase):
         self.assertEqual((repo / ".agents/memory").resolve(), (self.store / "valid").resolve())
 
     def run_check(self, cwd, with_env=True):
-        """Валидатор внутри дерева. with_env=False — так и стартует сессия."""
+        """Run the validator inside the tree. with_env=False matches session startup."""
         env = dict(os.environ, HOME=str(self.tmp))
         env.pop("AGENTS_MEMORY_STORE", None)
         if with_env:
@@ -129,10 +129,10 @@ class TestProjectKey(unittest.TestCase):
                               cwd=cwd, capture_output=True, text=True, env=env)
 
     def test_stale_worktree_link_is_detected_after_key_change(self):
-        """То, ради чего проверка добавлена: смена ключа в одном дереве.
+        """The scenario this check addresses: changing the key in one tree.
 
-        Ссылка второго дерева остаётся на прежнем каталоге. Раньше оба дерева
-        проходили проверку с кодом 0, читая при этом разную память.
+        The second tree's link still points to the old directory. Both trees
+        previously passed validation with code 0 while reading different memory.
         """
         repo = self.make_repo("repo")
         wt = self.tmp / "repo-billing"
@@ -148,24 +148,24 @@ class TestProjectKey(unittest.TestCase):
         self.assertEqual(self.run_check(repo).returncode, 0)
         stale = self.run_check(wt)
         self.assertEqual(stale.returncode, 1, stale.stdout)
-        self.assertIn("не ту память", stale.stdout)
+        self.assertIn("the wrong memory", stale.stdout)
 
         self.run_setup(wt)
         self.assertEqual(self.run_check(wt).returncode, 0)
 
     def test_custom_store_survives_setup_and_validator_without_env(self):
-        """Нестандартное хранилище задаётся один раз и переменной больше не требует.
+        """Configure a custom store once; later runs no longer need the variable.
 
-        Без сохранения хранилища повторный setup увёл бы память в стандартный
-        каталог, а валидатор без переменной объявил бы расхождение на исправном
-        дереве — ровно то, чего сохранённое состояние не допускает.
+        Without a saved store, another setup run would move memory to the default
+        directory. A validator run without the variable would report a mismatch
+        in a healthy tree — exactly what the persisted setting prevents.
         """
         repo = self.make_repo("repo")
         self.run_setup(repo)
         linked = (repo / ".agents/memory").resolve()
         self.assertEqual(linked, (self.store / "repo-memory").resolve())
 
-        # повторный запуск без переменной не переезжает в ~/.agents-memory
+        # rerunning without the variable does not move memory to ~/.agents-memory
         env = dict(os.environ, HOME=str(self.tmp))
         env.pop("AGENTS_MEMORY_STORE", None)
         r = subprocess.run([BASH, str(repo / "setup.sh")], cwd=repo,
@@ -177,12 +177,12 @@ class TestProjectKey(unittest.TestCase):
         self.assertEqual(self.run_check(repo, with_env=False).returncode, 0)
 
     def test_non_git_directory_falls_back_and_warns(self):
-        """Без git стабильного ключа взять неоткуда — об этом нужно сказать вслух."""
+        """Without Git there is no stable key to derive; report this explicitly."""
         plain = self.tmp / "plain"
         plain.mkdir()
         shutil.copy2(SETUP, plain / "setup.sh")
         out = self.run_setup(plain).stdout
-        self.assertIn("ВНИМАНИЕ", out)
+        self.assertIn("WARNING", out)
         self.assertEqual(Path(os.readlink(plain / ".agents" / "memory")).name, "plain-memory")
 
     def test_seed_commit_failure_does_not_block_memory_link(self):
@@ -193,7 +193,7 @@ class TestProjectKey(unittest.TestCase):
         out = subprocess.run([BASH, str(repo / "setup.sh")], cwd=repo, env=env,
                              capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
-        self.assertIn("начальный коммит не создан", out.stdout)
+        self.assertIn("initial commit was not created", out.stdout)
         self.assertTrue((repo / ".agents/memory").is_symlink())
         self.assertTrue((self.store / "repo-memory/.git").is_dir())
 
@@ -246,7 +246,7 @@ class TestProjectKey(unittest.TestCase):
         repo = self.make_repo("repo")
         self.run_setup(repo)
         out = self.run_setup(repo).stdout
-        self.assertIn("уже на месте", out)
+        self.assertIn("already in place", out)
 
 
 if __name__ == "__main__":

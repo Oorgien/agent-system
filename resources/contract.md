@@ -1,256 +1,261 @@
-# Операционный контракт
+# Operational contract
 
-Этот файл читают оба харнесса. Правила здесь применимы и к Claude Code, и к Codex.
+Both harnesses read this file. These rules apply to both Claude Code and Codex.
+
+Write maintained documentation, prompts, task records, and memory facts in English; preserve literal identifiers, commands, and quoted evidence.
 
 ---
 
-## 1. Состояние: два уровня
+## 1. State: two levels
 
 ```text
-.agents/memory/                знание о проекте    живёт дольше задач
-.agents/state/tasks/<slug>/    состояние задачи    сохраняется после завершения
+.agents/memory/                project knowledge    outlives tasks
+.agents/state/tasks/<slug>/    task state           retained after completion
 ```
 
-**Память проекта** — как работать с этим репозиторием: где что лежит, что долго
-собирается, где грабли в тестах, какие соглашения приняты. Один факт — один файл.
+**Project memory** describes how to work with this repository: where things live,
+what takes a long time to build, testing pitfalls, and established conventions.
+One fact per file.
 
-Память **проектная, а не веточная** и хранится вне рабочего дерева.
-`~/.agents-memory/` — обычная папка, без собственной `.git`. Каждый каталог проекта
-в ней — отдельный Git-репозиторий памяти со своей историей и приватным remote,
-если нужен перенос между машинами. CLI не создаёт удалённый репозиторий и не задаёт
-его видимость: приватность remote настраивает владелец.
+Memory is **per project, not per branch**, and lives outside the worktree.
+`~/.agents-memory/` is an ordinary directory with no `.git` of its own. Each project
+subdirectory is a separate memory Git repository with its own history and a private
+remote if transfer between machines is needed. The CLI does not create a remote
+repository or set its visibility: the owner configures remote privacy.
 
 ```text
-~/.agents-memory/                     обычная папка
-├── project-a-memory/                 отдельный Git-репозиторий памяти проекта A
-├── project-b-memory/                 отдельный Git-репозиторий памяти проекта B
-└── project-c-memory/                 отдельный Git-репозиторий памяти проекта C
+~/.agents-memory/                     ordinary directory
+├── project-a-memory/                 separate Git repository for project A's memory
+├── project-b-memory/                 separate Git repository for project B's memory
+└── project-c-memory/                 separate Git repository for project C's memory
 
 repo/.agents/memory               -> ~/.agents-memory/project-a-memory
 ../repo-2/.agents/memory           -> ~/.agents-memory/project-a-memory
 repo/.worktrees/repo/.agents/memory -> ~/.agents-memory/project-a-memory
 ```
 
-Существующие сохранённые ключи и корректные ссылки сохраняются: суффикс `-memory`
-добавляется только при автоматическом выборе нового ключа.
+Existing saved keys and valid symlinks are preserved: the `-memory` suffix is added
+only when a new key is selected automatically.
 
-Ключ проекта — имя подкаталога в хранилище. Он **обязан совпадать у всех worktrees
-одного репозитория**, иначе деревья видят разную память, притом что симлинки на месте
-и ошибки нет. Имя *текущего* каталога ключом быть не может: у worktree оно другое
-по построению.
+The project key is the name of a subdirectory in the store. It **must be the same
+across all worktrees of one repository**; otherwise, the trees see different memory
+even though the symlinks exist and no error is reported. The *current* directory name
+cannot serve as the key: a worktree has a different name by design.
 
-`agent-system init` выбирает и **запоминает** оба значения:
+`agent-system init` selects and **remembers** both values:
 
-| | приоритет |
+| | Priority |
 |---|---|
-| ключ | явный аргумент → сохранённый `agents.memoryKey` → существующая ссылка → имя каталога основного рабочего дерева git + `-memory` |
-| хранилище | `AGENTS_MEMORY_STORE` → сохранённый `agents.memoryStore` → существующая ссылка → `~/.agents-memory` |
+| Key | Explicit argument → saved `agents.memoryKey` → existing symlink → main Git worktree directory name + `-memory` |
+| Store | `AGENTS_MEMORY_STORE` → saved `agents.memoryStore` → existing symlink → `~/.agents-memory` |
 
-Сохраняются они в общий локальный git config (`git config --local`; ни global,
-ни `config.worktree` для них не используются), который у всех worktrees один — поэтому
-значения переживают и повторный запуск без переменной, и переименование каталога
-репозитория.
+They are saved in the shared local Git config (`git config --local`; neither global
+config nor `config.worktree` is used). All worktrees share this config, so the values
+survive both reruns without the environment variable and repository directory renames.
 
-Вне git сохранять негде: скрипт предупреждает и берёт имя текущего каталога + `-memory`, а явный
-ключ приходится передавать каждый раз. Свежий клон git config не получает — задайте
-ключ один раз через `agent-system init --memory-key <project>`.
+Outside Git, there is nowhere to save them: the script warns and uses the current
+directory name + `-memory`, and an explicit key must be passed each time. A fresh
+clone does not inherit Git config: set the key once with `agent-system init --memory-key <project>`.
 
-Явная смена ключа или хранилища перенастраивает **только текущее дерево**; в остальных
-нужно повторить `agent-system init`. Отставшие деревья находит `agent-system doctor`
-и сообщает о них ошибкой. Содержимое старой памяти автоматически не переносится.
+An explicit change of key or store reconfigures **only the current tree**; run
+`agent-system init` again in the others. `agent-system doctor` detects trees that
+still use the old settings and reports an error. Old memory is not moved automatically.
 
-Симлинк gitignored, поэтому `agent-system init` запускается **в каждом worktree и на каждой
-машине**. `git clean -fdx` сносит симлинк, но не хранилище: симлинки удаляются,
-а не разыменовываются.
+The symlink is gitignored, so run `agent-system init` **in every worktree and on every
+machine**. `git clean -fdx` removes the symlink but not the store: symlinks are removed,
+not followed.
 
-**Состояние задачи** живёт в `.agents/state/tasks/<slug>/`, коммитится в ветку задачи
-и **общее для обоих харнессов**. Отдельных версий под Claude и Codex не бывает.
+**Task state** lives in `.agents/state/tasks/<slug>/`, is committed to the task branch,
+and is **shared by both harnesses**. There are no separate Claude and Codex versions.
 
-| Путь | Что содержит |
+| Path | Contents |
 |---|---|
-| `task.md` | контракт задачи: goal, scope, acceptance criteria, non-goals, constraints |
-| `journal/<ts>-<hash32>-<ordinal6>.md` | записи: решения, результаты, тупики, состояние дерева |
+| `task.md` | Task contract: goal, scope, acceptance criteria, non-goals, constraints |
+| `journal/<ts>-<hash32>-<ordinal6>.md` | Entries: decisions, results, dead ends, worktree state |
 
-`task.md` начинается с фронтматтера:
+`task.md` starts with frontmatter:
 
 ```yaml
 id: task-a
 status: active        # active | paused | done | abandoned
-branch: feature-a     # информационное поле
+branch: feature-a     # informational field
 created: 2026-09-10
 ```
 
-`branch` — подсказка, а не идентичность. Несколько задач в одном рабочем дереве —
-норма, поэтому расхождение `branch` с текущей веткой это предупреждение, а не ошибка.
+`branch` is a hint, not an identity. Multiple tasks in one worktree are normal, so a
+mismatch between `branch` and the current branch is a warning, not an error.
 
-**Журнал — каталог, а не файл.** Одна запись — один файл. Новый формат имени:
+**The journal is a directory, not a file.** One entry per file. The new filename format:
 
 ```text
 journal/<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md
 journal/20260910T142233Z-8231adf1ce782ae5bd7a52c329e1ceae-000001.md
 ```
 
-`hash32` — первые 32 строчных шестнадцатеричных символа SHA-256 полного session id;
-`ordinal6` — шестизначный номер попытки, начиная с `000001` для пары timestamp/hash.
-Это не общий счётчик задачи. Первые восемь символов session id могут совпадать у
-разных чатов; уникальность нового файла не полагается ни на них, ни на отсутствие
-коллизий хеша. CLI полностью записывает временный файл в том же каталоге, выполняет
-`flush`/`fsync`, затем публикует его через `link` без перезаписи существующего пути.
-Если имя занято, CLI пробует следующий ordinal. Читатель видит только полную запись;
-два одновременных checkpoint не затирают друг друга. Общей блокировки журнала нет.
+`hash32` is the first 32 lowercase hexadecimal characters of the full session ID's
+SHA-256 hash; `ordinal6` is a six-digit attempt number, starting at `000001` for each
+timestamp/hash pair. This is not a shared task counter. Different chats may share the
+first eight characters of a session ID; a new file's uniqueness relies on neither
+those characters nor the absence of hash collisions. The CLI writes a complete
+temporary file in the same directory, calls `flush`/`fsync`, then publishes it using
+`link` without overwriting an existing path. If the name is taken, the CLI tries the
+next ordinal. Readers see only complete entries; two simultaneous checkpoints do
+not overwrite each other. There is no shared journal lock.
 
-Внутри записи — фронтматтер `session`, `at`, `stage`, дальше текст. Полный session id
-сохраняется в метаданных. `--stage` — 1–64 ASCII-символа по полному шаблону
-`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; пробелы, `#` и переводы строк недопустимы.
+Each entry contains `session`, `at`, and `stage` frontmatter followed by text. The full
+session ID is retained in metadata. `--stage` is 1–64 ASCII characters fully matching
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; spaces, `#`, and newlines are not allowed.
 
-Канонический читатель — `agent-system task journal [slug]`; без slug используется
-привязка текущего чата. Он читает legacy `journal.md` первым, затем старые и новые
-файлы `journal/` в проверенном порядке. Неоднозначное старое имя `<ts>-<sid8>[-N].md`
-разбирается с учётом полного `session` в метаданных, а не одной регуляркой имени.
-Повреждённая запись вызывает ошибку, её нельзя молча пропустить. Старые записи
-**не конвертируются**, новые всегда идут в `journal/`.
+The canonical reader is `agent-system task journal [slug]`; omitting the slug uses the
+current chat's binding. It reads legacy `journal.md` first, followed by old and new
+`journal/` files in a validated order. Ambiguous old names, `<ts>-<sid8>[-N].md`, are
+parsed using the full `session` metadata, not just a filename regex. A corrupted entry
+raises an error and must not be silently skipped. Old entries are **not converted**;
+new entries always go into `journal/`.
 
-Сортировка по UTC timestamp, hash32 сессии, числовому ordinal и имени файла при
-равенстве предыдущих полей даёт детерминированный порядок показа,
-но не гарантирует причинный порядок между машинами: часы могут расходиться.
+Sorting by UTC timestamp, session hash32, numeric ordinal, and filename to break ties
+produces a deterministic display order, but does not guarantee causal ordering across
+machines: clocks can differ.
 
-**Привязка чата к задаче** — `.agents/state/sessions/<session-id>`, gitignored,
-одна строка JSON:
+**Chat-to-task binding** is stored in `.agents/state/sessions/<session-id>`, gitignored,
+as a single line of JSON:
 
 ```json
 {"slug":"task-a","harness":"claude","bound_at":"2026-09-10T14:22:33Z"}
 ```
 
-Имя файла — session id. Обратный индекс «какие чаты на задаче X» — перечисление
-каталога; отдельной структуры для этого нет.
+The filename is the session ID. The reverse index, "which chats are bound to task X,"
+is a directory listing; there is no separate data structure for it.
 
-**Session id** — идентификатор чата, который харнесс сообщает через окружение:
+**Session ID** is the chat identifier provided by the harness through the environment:
 
-| приоритет | источник |
+| Priority | Source |
 |---|---|
-| 1 | `AGENTS_SESSION_ID` — явный override, работает в любом харнессе |
+| 1 | `AGENTS_SESSION_ID` — explicit override, works in any harness |
 | 2 | `CLAUDE_CODE_SESSION_ID` |
-| 3 | `CODEX_THREAD_ID`, затем `CODEX_SESSION_ID` |
+| 3 | `CODEX_THREAD_ID`, then `CODEX_SESSION_ID` |
 
-Проверяется точное значение целиком: 1–128 ASCII-символов `[A-Za-z0-9._-]`,
-кроме `.` и `..`. Служебные имена `.locks`, `.gitkeep`, `.DS_Store` и `.agents-<32 lowercase hex>`
-также зарезервированы. Пробелы и переводы строк не обрезаются.
-Не прошедшее — **отказ, а не санитизация**: приведённый к «безопасному» виду чужой
-идентификатор молча склеивает два разных чата в одну привязку. Если id не дал ни один
-источник, сессия работает **без привязки** — это законный режим, а не ошибка.
+The exact full value is validated: 1–128 ASCII characters from `[A-Za-z0-9._-]`,
+except `.` and `..`. The internal names `.locks`, `.gitkeep`, `.DS_Store`, and
+`.agents-<32 lowercase hex>` are also reserved. Spaces and newlines are not trimmed.
+Invalid values are **rejected, not sanitized**: converting an identifier to a "safe"
+form can silently merge two different chats into one binding. If no source provides
+an ID, the session works **without a binding** — a valid mode, not an error.
 
-В подключаемом проекте `.gitignore` исключает ссылку `.agents/memory`, каталог
-`.agents/state/sessions/`, `.agents/runs.jsonl` и legacy `.agents/state/ACTIVE`/`LOCK`
-до миграции, а не всю `.agents/`. Определения, скиллы и состояние задач версионируются
-в основном проекте.
+In an installed project, `.gitignore` excludes the `.agents/memory` symlink,
+`.agents/state/sessions/`, `.agents/runs.jsonl`, and legacy `.agents/state/ACTIVE`/`LOCK`
+until migration, rather than all of `.agents/`. Definitions, skills, and task state
+are versioned in the main project.
 
-Отдельного снимка состояния нет. Журнал читается целиком — проекция не нужна.
+There is no separate state snapshot. The journal is read in full; no projection is needed.
 
 ---
 
-## 2. Начало сессии
+## 2. Session startup
 
 ```text
-1. Прочитать .agents/memory/ — знание о репозитории
-2. Определить session id, прочитать .agents/state/sessions/<session-id>
-3. Проверить, что привязка валидна (см. ниже)
-4. Прочитать task.md и журнал ЦЕЛИКОМ
-5. Проверить фактическое состояние репозитория: git status, diff
+1. Read .agents/memory/ — repository knowledge
+2. Determine the session ID; read .agents/state/sessions/<session-id>
+3. Validate the binding (see below)
+4. Read task.md and the ENTIRE journal
+5. Check the actual repository state: git status, diff
 ```
 
-**Шаг 1 безусловен.** Он выполняется и тогда, когда активной задачи нет, и тогда, когда
-задача не выбралась: память к задаче не привязана. Без этого шага цикл разорван —
-завершение задачи (§7) складывает знание в память, а следующая сессия его не читает.
+**Step 1 is unconditional.** It applies even when there is no active task or no task
+has been selected: memory is not tied to a task. Without this step, the cycle is
+broken — task completion (§7) puts knowledge into memory, but the next session does
+not read it.
 
-Каталог маленький и плоский: перечислить файлы и прочитать относящиеся к предстоящей
-работе, при сомнении — целиком. Если `.agents/memory` отсутствует или это битый симлинк,
-памяти в этом дереве нет: запустить `agent-system init` (§1), а не работать молча без неё.
+The directory is small and flat: list the files and read those relevant to the work
+ahead; if in doubt, read them all. If `.agents/memory` is missing or is a broken symlink,
+this tree has no memory: run `agent-system init` (§1) instead of silently working without it.
 
-**Разрешение задачи.** Привязка — authoritative указатель; ветка лишь подсказка.
+**Task resolution.** The binding is the authoritative pointer; the branch is only a hint.
 
 ```text
-session id известен?
-├── нет → работать без привязки, предложить bind
-└── да
-    ├── sessions/<id> есть → slug оттуда → валидировать
-    └── нет
-        ├── ровно одна задача со status: active → предложить, НЕ привязывать молча
-        └── ноль или несколько → показать список, спросить
+Is the session ID known?
+├── no → work without a binding; offer bind
+└── yes
+    ├── sessions/<id> exists → take its slug → validate
+    └── missing
+        ├── exactly one task with status: active → offer it; do NOT bind silently
+        └── zero or multiple → show the list; ask
 ```
 
-**Валидация обязательна.** Проверить: существует `tasks/<slug>/task.md`; `id` внутри
-совпадает со slug; `status` ∈ {`active`, `paused`}. Несовпадение `branch` с текущей
-веткой — **предупреждение, не ошибка**: несколько задач в одном дереве теперь норма.
+**Validation is mandatory.** Check that `tasks/<slug>/task.md` exists, its `id` matches
+the slug, and `status` ∈ {`active`, `paused`}. A mismatch between `branch` and the current
+branch is **a warning, not an error**: multiple tasks in one tree are now normal.
 
-Битая привязка **не чинится автоматически**: сообщить и уйти в discovery. Загрузить
-чужую задачу хуже, чем не выбрать никакую.
+A broken binding is **not repaired automatically**: report it and fall back to
+discovery. Loading the wrong task is worse than selecting none.
 
-**Привязка идемпотентна.** `sessions/<id>` с тем же slug — no-op. С другим slug —
-перепривязка **только по явной команде с `--force`**, молча не перезаписывать.
-`bind` и `unbind` держат короткую OS-блокировку `flock` для одного session id на время
-проверки и изменения привязки; разные чаты не блокируют друг друга. `--force` разрешает
-перепривязку, но не обходит блокировку или валидацию. Файлы в `sessions/.locks/`
-сохраняются; саму блокировку ОС освобождает при завершении процесса. JSON записывается
-атомарно через временный файл в том же каталоге и `os.replace`.
+**Binding is idempotent.** `sessions/<id>` with the same slug is a no-op. A different
+slug requires rebinding **only through an explicit command with `--force`**; do not
+overwrite silently. `bind` and `unbind` hold a short OS `flock` for one session ID while
+checking and changing the binding; different chats do not block each other. `--force`
+permits rebinding but does not bypass locking or validation. Files in
+`sessions/.locks/` are retained; the OS releases the lock when the process exits.
+JSON is written atomically using a temporary file in the same directory and `os.replace`.
 
-Legacy `.agents/state/ACTIVE` остаётся кандидатом; успешный `bind` именно к указанной
-в нём задаче снимает его только при отсутствии legacy `LOCK`. Привязка к другой задаче
-или наличие `LOCK` сохраняют `ACTIVE`. Legacy `LOCK` автоматически не удаляется:
-перед ручным удалением убедиться, что старая сессия больше не работает. Затем повторить
-соответствующий `bind`. Оба legacy-файла остаются gitignored до завершения миграции.
+Legacy `.agents/state/ACTIVE` remains a candidate; a successful `bind` to the exact
+task it names removes it only if no legacy `LOCK` exists. Binding to another task,
+or the presence of `LOCK`, preserves `ACTIVE`. Legacy `LOCK` is not removed
+automatically: before removing it manually, confirm that the old session is no longer
+running. Then repeat the corresponding `bind`. Both legacy files remain gitignored
+until migration is complete.
 
-**Чтение журнала целиком** — через `agent-system task journal [slug]` (§1),
-а не сортировку имён средствами shell. Повреждение записи останавливает чтение;
-продолжать с молча урезанным журналом нельзя.
+**Read the entire journal** through `agent-system task journal [slug]` (§1),
+not by sorting filenames in the shell. A corrupted entry stops reading; do not
+continue with a silently truncated journal.
 
 ---
 
 ## 3. Checkpoint
 
-Checkpoint вызывается **только вручную по явной команде пользователя или агента**
-через скилл `checkpoint` (`.agents/skills/checkpoint/`). Завершение этапа или работы,
-результат сабагента, прерывание, переключение харнесса и приближение лимита
-не вызывают checkpoint автоматически и не требуют его обязательного вызова.
+Invoke checkpoint **only manually, on an explicit user or agent command**, through
+the `checkpoint` skill (`.agents/skills/checkpoint/`). Completing a stage or task,
+receiving a subagent result, interruption, switching harnesses, and approaching a
+limit neither trigger a checkpoint automatically nor make one mandatory.
 
-Явно вызванный checkpoint записывает main после оценки результатов; сабагенты
-не пишут canonical task state. Если запись упала, checkpoint не считается
-сохранённым: main сообщает об ошибке. Без явной команды запись не является
-условием перехода к следующему этапу.
+Main writes an explicitly requested checkpoint after evaluating the results; subagents
+do not write canonical task state. If the write fails, the checkpoint is not considered
+saved: main reports the error. Without an explicit command, a write is not a condition
+for proceeding to the next stage.
 
-Механически checkpoint — **создание нового файла**
-`journal/<ts>-<hash32>-<ordinal6>.md` (`agent-system task checkpoint`), с атомарной
-публикацией без перезаписи (§1). Задача берётся из привязки либо задаётся явно:
-`agent-system task checkpoint <slug>`. В обоих случаях задача должна существовать
-со статусом `active` или `paused`; завершённую задачу сначала явно возобновляют.
-Явный slug не создаёт задачу и не обходит проверку статуса.
+Mechanically, a checkpoint **creates a new file**,
+`journal/<ts>-<hash32>-<ordinal6>.md` (`agent-system task checkpoint`), published atomically
+without overwriting (§1). The task comes from the binding or is specified explicitly:
+`agent-system task checkpoint <slug>`. In both cases, the task must exist with status
+`active` or `paused`; explicitly resume a completed task first. An explicit slug neither
+creates a task nor bypasses status validation.
 
-### Что писать
+### What to write
 
-Критерий один:
+There is one criterion:
 
-> Всё существенное для продолжения, что **нельзя восстановить из файлов репозитория**.
+> Anything essential for continuing that **cannot be recovered from repository files**.
 
-Сюда входит:
+This includes:
 
-- новое решение и **принятое намерение**, включая решение о следующем шаге;
-- важный результат, отвергнутый подход **с причиной**;
-- завершённый кусок реализации, существенный blocker;
-- результат проверок, включая «не запускались»;
-- **состояние рабочего дерева: чисто или грязно и почему.**
+- a new decision and **agreed intent**, including a decision about the next step;
+- an important result, a rejected approach **with the reason**;
+- a completed piece of implementation, a significant blocker;
+- check results, including "not run";
+- **worktree state: clean or dirty, and why.**
 
-Намерение пишется наравне с результатом. Решение «сначала проверить совместимость
-миграции на старых данных, потом реализовывать» не оставляет следа в коде — если его
-не записать, оно не восстановится ниоткуда.
+Intent is recorded alongside results. A decision such as "first check migration
+compatibility with old data, then implement" leaves no trace in the code; without
+a record, it cannot be recovered from anywhere.
 
-Состояние дерева выделено намеренно: новая сессия увидит изменения в `git status`,
-но не поймёт, брошены они или намеренно оставлены на середине.
+Worktree state is called out deliberately: a new session will see changes in
+`git status` but cannot tell whether they were abandoned or intentionally left unfinished.
 
-**Чего не писать:** полного пересказа всего состояния каждый раз. Записывается дельта.
-Журнал, где девять десятых повторов, перестают перечитывать.
+**What not to write:** a complete retelling of the entire state every time. Record the
+delta. People stop rereading a journal when nine tenths of it is repetition.
 
-### Формат записи
+### Entry format
 
-Файл `journal/20260909T182014Z-8231adf1ce782ae5bd7a52c329e1ceae-000001.md`:
+File `journal/20260909T182014Z-8231adf1ce782ae5bd7a52c329e1ceae-000001.md`:
 
 ```md
 ---
@@ -264,40 +269,40 @@ Rejected: the abstraction does not expose atomic compare-and-set,
 which the current synchronization path requires.
 ```
 
-Timestamp задаёт порядок показа, hash32 различает session id, а exclusive-публикация
-с повтором ordinal защищает от коллизий. Это не причинные часы и не общий счётчик задачи.
+The timestamp determines display order, hash32 distinguishes session IDs, and exclusive
+publication with ordinal retries protects against collisions. This is neither a causal
+clock nor a shared task counter.
 
 ---
 
-## 4. Переключение харнесса
+## 4. Switching harnesses
 
-Переключение харнесса само по себе не вызывает и не требует checkpoint.
-При начале или возобновлении работы новый харнесс выполняет §2: читает сохранённое
-состояние и сверяет его с Git. Несохранённый контекст может быть потерян.
+Switching harnesses does not itself trigger or require a checkpoint. When starting or
+resuming work, the new harness follows §2: it reads saved state and checks it against
+Git. Unsaved context may be lost.
 
 ---
 
-## 5. Делегирование
+## 5. Delegation
 
-Стадии определяются семантическими сигналами, а не ощущением.
+Stages are determined by semantic signals, not intuition.
 
-**TRIVIAL** — нет изменения публичного контракта, нет schema/миграции, нет auth и
-security-логики, нет concurrency и распределённого состояния, нет cross-component
-инварианта, паттерн очевиден.
-→ `main или implementer → verification`. Reviewer опционален.
+**TRIVIAL** — no public contract change, no schema/migration, no auth or security logic,
+no concurrency or distributed state, no cross-component invariant; the pattern is clear.
+→ `main or implementer → verification`. Reviewer is optional.
 
-**NORMAL** — default, когда задача не очевидно тривиальна и не содержит complex-сигналов.
-→ `explorer если нужен → implementer → reviewer`.
+**NORMAL** — the default when a task is neither obviously trivial nor contains complex signals.
+→ `explorer if needed → implementer → reviewer`.
 
-**COMPLEX** — изменение публичного API или протокола, миграция схемы, риск потери данных,
-auth и permissions, concurrency, распределённое состояние, cross-service контракт,
-изменение архитектурной границы, высокая неоднозначность, новая стратегия реализации.
-→ `explorer → планирование → implementer → reviewer`.
+**COMPLEX** — public API or protocol change, schema migration, risk of data loss, auth
+and permissions, concurrency, distributed state, cross-service contract, architectural
+boundary change, high ambiguity, or a new implementation strategy.
+→ `explorer → planning → implementer → reviewer`.
 
-Количество изменённых файлов — **слабый** сигнал. Переименовать 20 сгенерированных файлов
-может быть тривиально; поменять строку в логике авторизации — нет.
+The number of changed files is a **weak** signal. Renaming 20 generated files can be
+trivial; changing one line of authorization logic may not be.
 
-**При неуверенности — NORMAL.** Явный override пользователя разрешён в обе стороны.
+**When unsure, use NORMAL.** An explicit user override is allowed in either direction.
 
 ---
 
@@ -307,116 +312,116 @@ auth и permissions, concurrency, распределённое состояни�
 implement → review → fix → review
 ```
 
-По умолчанию максимум 2–3 корректирующих раунда. После этого main **диагностирует причину**
-несходимости, а не эскалирует автоматически по числовому лимиту:
+Default to at most 2–3 corrective rounds. After that, main **diagnoses why the work is
+not converging**, rather than escalating automatically because of a numerical limit:
 
 ```text
-неясное требование        → спросить пользователя
-техническая неизвестность → explorer
-implementation thrashing  → остановить цикл и суммировать
-фундаментальная проблема  → вернуться к планированию
+unclear requirement      → ask the user
+technical unknown        → explorer
+implementation thrashing → stop the loop and summarize
+fundamental problem      → return to planning
 ```
 
-Отдельного постоянного оркестратора нет: main-сессия и есть оркестратор.
+There is no separate permanent orchestrator: the main session is the orchestrator.
 
 ---
 
-## 7. Завершение задачи
+## 7. Task completion
 
-Завершение — **шаг выпуска знаний, а не удаление каталога**. Без него важные
-находки останутся только в журнале, который следующие задачи обычно не читают.
+Completion is **a step for publishing knowledge, not deleting a directory**. Without
+it, important findings remain only in the journal, which later tasks usually do not read.
 
-Пройти журнал и разложить:
+Review the journal and separate its contents:
 
-| Что | Куда |
+| What | Where |
 |---|---|
-| решение по коду и архитектуре, которое должны знать люди | документация проекта, в git |
-| как работать с этим репозиторием | `.agents/memory/` |
-| ход конкретной задачи | остаётся в журнале задачи, в память проекта не копируется |
+| Code and architecture decisions people need to know | Project documentation, in Git |
+| How to work with this repository | `.agents/memory/` |
+| Progress of the specific task | Remains in the task journal; not copied to project memory |
 
-Третья строка не менее важна первых двух: если выпускать всё, память станет вторым
-журналом и перестанет быть полезной.
+The third row matters as much as the first two: publishing everything turns memory
+into a second journal and makes it less useful.
 
-Затем: `status` → `done`/`abandoned` и снять привязки чатов, которые на этой задаче
-стоят. Живые привязки к завершённой задаче — ошибка состояния, её сообщает
-`check_state.py`.
+Then set `status` to `done`/`abandoned` and remove bindings for chats bound to that task.
+Live bindings to a completed task are a state error reported by `check_state.py`.
 
-После завершения `task.md` и `journal/` сохраняются в `.agents/state/tasks/<slug>/`,
-в том числе после merge/squash. Завершённые журналы не читаются при обычном старте
-сессии: к ним обращаются по необходимости. Для возобновления задачи явно выбрать её,
-проверить текущее состояние кода, обновить `branch` и `status`, затем привязать чат.
+After completion, `task.md` and `journal/` remain in `.agents/state/tasks/<slug>/`,
+including after merge/squash. Completed journals are not read during normal session
+startup; consult them when needed. To resume a task, explicitly select it, check the
+current code state, update `branch` and `status`, then bind the chat.
 
-`status: paused` — для задачи, к которой намерены вернуться: она валидна для привязки,
-но discovery её не предлагает.
-
----
-
-## 8. Инварианты
-
-- **Привязка чата к задаче принадлежит чату, а не рабочему дереву.** Несколько задач
-  в дереве и несколько чатов на одной задаче — норма; взаимного вытеснения нет.
-- **Одна запись журнала — один файл, и пишет её ровно одна сессия.** Существующие
-  записи не редактируются: журнал append-only на уровне каталога.
-- **Правки `task.md` согласует main задачи** — смена `status` и правка scope.
-  Атомарная запись файла не разрешает содержательные конфликты между чатами.
-- **Canonical task state пишет только main.** Параллельным implementer назначаются
-  непересекающиеся области; перед явно вызванным checkpoint запись прекращают и сабагенты.
-- **`runs.jsonl` никогда не является каноническим состоянием.**
+`status: paused` is for a task you intend to return to: it is valid for binding,
+but discovery does not suggest it.
 
 ---
 
-## 9. Инструменты
+## 8. Invariants
+
+- **The chat-to-task binding belongs to the chat, not the worktree.** Multiple tasks
+  in one tree and multiple chats on one task are normal; they do not displace each other.
+- **One journal entry is one file, written by exactly one session.** Existing entries
+  are not edited: the journal is append-only at the directory level.
+- **The task's main coordinates `task.md` edits** — status changes and scope edits.
+  Atomic file writes do not resolve semantic conflicts between chats.
+- **Only main writes canonical task state.** Parallel implementers are assigned
+  non-overlapping areas; subagents must also stop writing before an explicitly invoked checkpoint.
+- **`runs.jsonl` is never canonical state.**
+
+---
+
+## 9. Tools
 
 ```bash
-agent-system init      # хранилище памяти + симлинки (§1), в каждом дереве
-agent-system update    # обновить определения и скиллы из клона Agent System
-agent-system doctor    # проверить установку, состояние задач и привязки (§2)
+agent-system init      # memory store + symlinks (§1), in every tree
+agent-system update    # update definitions and skills from the Agent System clone
+agent-system doctor    # check installation, task state, and bindings (§2)
 ```
 
-Работа с задачами и привязками:
+Working with tasks and bindings:
 
 ```bash
-agent-system task list                # задачи, их status и привязанные чаты
-agent-system task status              # что видит текущий чат: привязка или discovery
-agent-system task new <slug>          # создать новую задачу из шаблона
-agent-system task bind <slug>         # привязать текущий чат; --force для перепривязки
-agent-system task unbind              # снять привязку текущего чата
-agent-system task journal [slug]      # прочитать весь журнал в каноническом порядке
-agent-system task checkpoint          # новая запись журнала (§3), текст со stdin
+agent-system task list                # tasks, their status, and bound chats
+agent-system task status              # what the current chat sees: binding or discovery
+agent-system task new <slug>          # create a new task from the template
+agent-system task bind <slug>         # bind the current chat; --force to rebind
+agent-system task unbind              # remove the current chat's binding
+agent-system task journal [slug]      # read the entire journal in canonical order
+agent-system task checkpoint          # new journal entry (§3), text from stdin
 agent-system task set-status <slug> <status>
 ```
 
-`task list` и `task status` ничего не пишут. Привязку создаёт только `task bind`.
+`task list` and `task status` do not write anything. Only `task bind` creates a binding.
 
-`task new` резервирует каталог задачи эксклюзивным `mkdir`: конкурентный запуск
-с тем же slug получает отказ, существующая задача не перезаписывается. После сбоя
-может остаться каталог без `task.md`; проверка сообщает об этом как о незавершённом
-создании. CLI не удаляет такой каталог автоматически: содержимое проверяют вручную.
+`task new` reserves the task directory with an exclusive `mkdir`: a concurrent call
+with the same slug is rejected, and an existing task is not overwritten. A failure can
+leave a directory without `task.md`; validation reports this as incomplete creation.
+The CLI does not delete such a directory automatically: inspect its contents manually.
 
-`.claude/agents/` и `.codex/agents/` — **сгенерированные**. Править их бессмысленно:
-следующий запуск генератора перезапишет, а CI упадёт на drift-проверке. Изменять определения следует в клоне Agent System и выполнять `agent-system update`.
-Локальные изменения установленных файлов блокируют обновление до явного разрешения конфликта.
+`.claude/agents/` and `.codex/agents/` are **generated**. Editing them is pointless:
+the next generator run overwrites them, and CI fails the drift check. Change definitions
+in the Agent System clone and run `agent-system update`.
+Local edits to installed files block updates until the conflict is explicitly resolved.
 
-Если генератор отказывается собирать агента, сообщая о невыразимой границе доступа, —
-это не баг. У Claude права задаются списком инструментов, и `shell` без права записи
-там выразить нечем. Выбор между «убрать shell» и «признать, что агент пишет» —
-осознанный, обходить его не нужно.
+If the generator refuses to build an agent because an access boundary cannot be
+expressed, this is not a bug. Claude permissions are defined by a tool list, which
+cannot express `shell` without write access. Choosing between "remove shell" and
+"acknowledge that the agent can write" is deliberate; do not bypass it.
 
 ---
 
-## 10. Параллельная работа
+## 10. Parallel work
 
-Над разными фичами — через git worktrees, по одному харнессу на дерево:
+Use Git worktrees for different features, with one harness per tree:
 
 ```text
 repo/              → Claude, feature A
 ../repo-billing/   → Codex,  feature B
 ```
 
-`sessions/` и симлинк памяти gitignored и потому создаются в каждом дереве отдельно.
-Привязки у деревьев при этом **разные**, а симлинк памяти у всех ведёт в один
-и тот же каталог хранилища — память общая, состояние задачи нет. Правило выбора ключа
-и хранилища и то, что после его смены `agent-system init` нужно повторить в каждом дереве, —
-в §1; здесь оно не повторяется. Состояние
-задачи коммитится и живёт на своей ветке. Определения агентов и скиллов версионируются
-веткой — правка на ветке A не видна на ветке B до мержа.
+`sessions/` and the memory symlink are gitignored, so each tree creates them separately.
+The trees have **different** bindings, but all memory symlinks point to the same store
+directory: memory is shared; task state is not. The key and store selection rules,
+and the requirement to rerun `agent-system init` in each tree after changing them, are in §1
+and are not repeated here. Task state is committed and lives on its own branch.
+Agent and skill definitions are versioned by branch: an edit on branch A is not visible
+on branch B until merged.

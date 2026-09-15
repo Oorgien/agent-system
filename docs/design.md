@@ -1,155 +1,158 @@
-# Agent System — согласованный дизайн v9
+# Agent System — agreed design v9
 
-Статус: готов к реализации.
-Дата фиксации: 2026-09-09
-Уточнение хранения v1: 2026-09-11 — атомарная публикация журнала, каноническое чтение
-старых и новых записей, сериализация привязок одной сессии.
+Status: ready for implementation.
+Design frozen: 2026-09-09
+v1 storage clarification: 2026-09-11 — atomic journal publication, canonical reading
+of old and new entries, and serialization of bindings for the same session.
 
-Изменения относительно v8:
+Changes from v8:
 
-- **Добавлен уровень памяти проекта** `.agents/memory/` — долгосрочное знание о проекте,
-  отдельное от состояния задачи, вне git проекта (§2.1);
-- **`handoff.md` удалён.** Остаются `task.md` и журнал задачи; состояние рабочего дерева
-  переехало в контракт журнала, правило приоритета выкинуто за ненадобностью,
-  скилл переименован в `$checkpoint`;
-- добавлено правило выпуска знаний при завершении задачи (§7);
-- добавлено правило гигиены коммитов (§11);
-- зафиксирован критерий ротации журнала без введения механики (§2.2).
+- **Added a project memory layer** `.agents/memory/` — long-term project knowledge,
+  separate from task state and outside the project's Git repository (§2.1);
+- **Removed `handoff.md`.** `task.md` and the task journal remain; working tree state
+  moved into the journal contract, the precedence rule was removed as unnecessary,
+  and the skill was renamed to `$checkpoint`;
+- added a rule for publishing knowledge when a task is completed (§7);
+- added a commit hygiene rule (§11);
+- recorded a journal rotation criterion without introducing a mechanism (§2.2).
 
-Сохраняется из предыдущих версий: полное чтение журнала, checkpoint как явно вызываемая ручная операция
-с проверкой успешной записи, честные границы durability, поправка про squash, требование
-к адаптеру реально обеспечивать границы доступа, отказ от полного пересказа статуса в каждой записи.
+Retained from earlier versions: reading the entire journal, checkpoint as an explicitly invoked
+manual operation with successful-write verification, honest durability limits, the squash
+correction, the requirement for adapters to enforce access boundaries, and no full status recap
+in every entry.
 
 ---
 
-## 1. Цель и scope
+## 1. Goal and scope
 
-**Последовательная взаимозаменяемость харнессов**: один набор агентов, скиллов и рабочего
-состояния используется из Claude Code или Codex, по одному харнессу на сессию.
+**Sequential interchangeability of harnesses**: one set of agents, skills, and working
+state is used from Claude Code or Codex, with one harness per session.
 
-Сценарии:
+Scenarios:
 
-- работать из того харнесса, который сейчас удобнее;
-- упёрся в лимиты — продолжить в другом харнессе без ручного пересказа контекста;
-- изменения, внесённые одним харнессом, подхватываются другим вместе с состоянием задачи;
-- два харнесса работают **одновременно над разными фичами** в разных worktrees (§11);
-- роли `explorer` / `implementer` / `reviewer` работают через нативные subagent-механизмы обоих;
-- одинаковые portable skills доступны обоим.
+- work from whichever harness is convenient at the moment;
+- reach a usage limit and continue in another harness without manually retelling the context;
+- changes made in one harness are picked up by the other together with task state;
+- two harnesses work **on different features simultaneously** in separate worktrees (§11);
+- the `explorer` / `implementer` / `reviewer` roles use the native subagent mechanisms of both;
+- the same portable skills are available to both.
 
-### Вне scope
+### Out of scope
 
-Кросс-харнессная оркестрация (`Claude orchestrator → Codex subagent` и наоборот).
-Каждый харнесс использует собственный runtime, subagents, permissions, sandboxing и lifecycle.
+Cross-harness orchestration (`Claude orchestrator → Codex subagent` and vice versa).
+Each harness uses its own runtime, subagents, permissions, sandboxing, and lifecycle.
 
-Кросс-модельное ревью сохраняется как **ручное** действие: открыть ту же
-ветку в другом харнессе → попросить independent review.
+Cross-model review remains a **manual** action: open the same branch in another
+harness → request an independent review.
 
-Что это убирает:
+What this removes:
 
-| Убрано | Причина |
+| Removed | Reason |
 |---|---|
-| exec-recipe как цель генерации | другой харнесс не вызывается subprocess'ом |
-| враппер `run_agent.sh` | используются нативные subagents |
-| собственная sandbox-оркестрация | permissions — ответственность харнесса |
-| cross-harness RPC / state protocol | интеграция ограничена git + `.agents/` |
+| exec-recipe as a generation target | the other harness is not invoked as a subprocess |
+| `run_agent.sh` wrapper | native subagents are used |
+| custom sandbox orchestration | permissions are the harness's responsibility |
+| cross-harness RPC / state protocol | integration is limited to Git + `.agents/` |
 
 ---
 
-## 2. Модель состояния
+## 2. State model
 
-Два уровня с разной областью действия и разным сроком жизни:
+Two layers with different scopes and lifetimes:
 
 ```text
-.agents/memory/                  знание о проекте      живёт дольше задач
-.agents/state/tasks/<slug>/      состояние задачи      сохраняется после завершения
+.agents/memory/                  project knowledge     outlives tasks
+.agents/state/tasks/<slug>/      task state            retained after completion
 ```
 
-Смешивать их нельзя: у них разная область видимости, разный носитель и разные правила
-чтения. Что переезжает с одного уровня на другой и когда — §7.
+Do not mix them: they have different visibility, storage, and reading rules.
+What moves between these layers, and when, is covered in §7.
 
 ---
 
-### 2.1 Память проекта
+### 2.1 Project memory
 
-`.agents/memory/` — долгосрочное знание о том, **как работать с этим проектом**:
-где что лежит, что долго собирается, где грабли в тестах, какие соглашения приняты.
-Нужно агенту, людям не интересно, к конкретной задаче не привязано.
+`.agents/memory/` is long-term knowledge about **how to work with this project**:
+where things are, what takes a long time to build, testing pitfalls, and established conventions.
+It is useful to the agent, of no interest to people, and not tied to a specific task.
 
-Память **проектная, а не веточная**. Если положить её в git рядом с кодом, областью
-видимости станет ветка: узнали что-то, работая над billing, а на ветке auth этого знания
-нет до мержа. Это несовпадение семантики с носителем, а не неудобство.
+Memory is **project-scoped, not branch-scoped**. Storing it in Git next to the code makes
+the branch its visibility boundary: something learned while working on billing is unavailable
+on the auth branch until a merge. This is a mismatch between semantics and storage, not an
+inconvenience.
 
-Память **проектная, а не веточная** и хранится вне рабочего дерева.
-`~/.agents-memory/` — обычная папка, без собственной `.git`. Каждый каталог проекта
-в ней — отдельный Git-репозиторий памяти со своей историей и приватным remote,
-если нужен перенос между машинами. CLI не создаёт удалённый репозиторий и не задаёт
-его видимость: приватность remote настраивает владелец.
+Memory is **project-scoped, not branch-scoped**, and is stored outside the working tree.
+`~/.agents-memory/` is an ordinary directory with no `.git` of its own. Each project directory
+inside it is a separate memory Git repository with its own history and a private remote
+if transfer between machines is needed. The CLI does not create a remote repository or set
+its visibility: the owner configures the remote's privacy.
 
 ```text
-~/.agents-memory/                     обычная папка
-├── project-a-memory/                 отдельный Git-репозиторий памяти проекта A
-├── project-b-memory/                 отдельный Git-репозиторий памяти проекта B
-└── project-c-memory/                 отдельный Git-репозиторий памяти проекта C
+~/.agents-memory/                     ordinary directory
+├── project-a-memory/                 separate Git repository for project A's memory
+├── project-b-memory/                 separate Git repository for project B's memory
+└── project-c-memory/                 separate Git repository for project C's memory
 
 repo/.agents/memory               -> ~/.agents-memory/project-a-memory
 ../repo-2/.agents/memory           -> ~/.agents-memory/project-a-memory
 repo/.worktrees/repo/.agents/memory -> ~/.agents-memory/project-a-memory
 ```
 
-Свойства схемы:
+Properties of this layout:
 
-| Задача | Как решается |
+| Need | How it is addressed |
 |---|---|
-| общая память между worktrees | симлинк на одно хранилище — все деревья видят одно и то же |
-| перенос между машинами | `git clone` репозитория памяти проекта, отдельный приватный remote на проект |
-| бэкап и история изменений | отдельный git в каталоге памяти проекта |
-| ключ проекта | имя каталога в хранилище; связывает его сам симлинк |
+| shared memory across worktrees | symlinks to one store — all worktrees see the same content |
+| transfer between machines | `git clone` of the project's memory repository, a separate private remote per project |
+| backups and change history | a separate Git repository in the project's memory directory |
+| project key | the directory name in the store; the symlink establishes the association |
 
-**Один факт — один файл.** Иначе кросс-машинные мержи конфликтуют на каждом append;
-с отдельными файлами конфликты практически исчезают.
+**One fact — one file.** Otherwise, merges between machines conflict on every append;
+with separate files, conflicts practically disappear.
 
-`.agents/memory` — в `.gitignore` проекта. Симлинк создаётся **в каждом worktree и на каждой
-машине**: gitignored-файлы между деревьями не разделяются. Это две строки скрипта настройки —
-клонировать репозиторий памяти нужного проекта (раз на машину) и слинковать (раз на дерево).
+`.agents/memory` is in the project's `.gitignore`. The symlink is created **in every worktree
+and on every machine**: gitignored files are not shared between worktrees. This takes two
+lines in the setup script — clone the relevant project's memory repository (once per machine)
+and create a symlink (once per worktree).
 
-Схемы разрешения ключа проекта (по remote URL, по хешу пути) не вводить: коллизию имён
-разрулить руками, если она вообще случится.
+Do not introduce project key resolution schemes based on remote URLs or path hashes:
+resolve a name collision manually if one ever occurs.
 
-**Ключ обязан совпадать у всех worktrees одного репозитория** — иначе схема не выполняет
-того, ради чего введена, и делает это молча: симлинки на месте, ошибки нет, а память
-у деревьев разная. Имя *текущего* каталога ключом быть не может: у worktree оно другое
-по построению (`repo/` и `repo-billing/`). Скрипт настройки берёт имя каталога
-**основного** рабочего дерева + `-memory` — `git rev-parse --git-common-dir` указывает в `.git`
-основного репозитория одинаково из любого worktree. Вне git стабильного источника нет:
-скрипт предупреждает и принимает ключ аргументом. Регрессия закрыта тестом
+**The key must be identical across all worktrees of a repository**. Otherwise, the scheme
+silently fails at its purpose: the symlinks exist, there is no error, but the worktrees have
+different memory. The *current* directory name cannot be the key: worktree directory names
+are different by design (`repo/` and `repo-billing/`). The setup script uses the **main**
+working tree's directory name + `-memory` — `git rev-parse --git-common-dir` points to the
+main repository's `.git` from every worktree. Outside Git, there is no stable source:
+the script warns and accepts the key as an argument. The regression is covered by
 `test_worktrees_share_one_memory_directory`.
 
-Побочное свойство: `git clean -fdx` в проекте снесёт симлинк, но не хранилище — симлинки
-удаляются, а не разыменовываются. Восстанавливается одной строкой, память цела.
+An incidental property: `git clean -fdx` in the project removes the symlink but not the store —
+symlinks are removed, not dereferenced. One line restores the link; the memory remains intact.
 
 ---
 
-### 2.2 Состояние задачи
+### 2.2 Task state
 
-Контракт и журнал, оба коммитятся в ветку задачи:
+The contract and journal are both committed to the task branch:
 
-| Путь | Отвечает на вопрос | Запись | Владелец |
+| Path | Question answered | Writes | Owner |
 |---|---|---|---|
-| `task.md` | что мы вообще делаем | редко, при смене требований | человек / main |
-| `journal/<ts>-<hash32>-<ordinal6>.md` | что мы выяснили и где мы сейчас | новая запись только по явной ручной команде | main |
+| `task.md` | what we are doing | infrequently, when requirements change | human / main |
+| `journal/<ts>-<hash32>-<ordinal6>.md` | what we have learned and where we are now | a new entry only on an explicit manual command | main |
 
-Отдельного снимка состояния (`handoff.md`) нет: журнал читается целиком, поэтому проекция
-не нужна, а вместе с ней исчезают правило приоритета между источниками, вопрос свежести
-снимка и целый шаг в процедуре переключения.
+There is no separate state snapshot (`handoff.md`): the journal is read in full, so a projection
+is unnecessary. This also removes the precedence rule between sources, the question of snapshot
+freshness, and an entire step from the switching procedure.
 
-Файлы **общие для обоих харнессов**. Отдельных версий под Claude и Codex не бывает:
-при переключении продолжают читать и дополнять тот же комплект.
+The files are **shared by both harnesses**. There are no separate Claude and Codex versions:
+after a switch, the same set of files is read and extended.
 
 #### `task.md`
 
-Authoritative contract задачи: goal, scope, acceptance criteria, non-goals, constraints,
-known relevant context. Не immutable — меняется, когда реально меняются требования.
-При явно вызванном checkpoint существенное изменение контракта отражается в журнале.
+The task's authoritative contract: goal, scope, acceptance criteria, non-goals, constraints,
+known relevant context. It is not immutable — it changes when the requirements actually change.
+An explicitly invoked checkpoint records significant contract changes in the journal.
 
 Frontmatter:
 
@@ -157,24 +160,24 @@ Frontmatter:
 ---
 id: auth-refactor
 status: active | paused | done | abandoned
-branch: feature/auth-refactor   # advisory hint, может устареть
+branch: feature/auth-refactor   # advisory hint, may become stale
 created: 2026-09-09
 ---
 ```
 
-`branch` — подсказка, не идентичность. Переименование ветки её ломает, и процедура
-разрешения обязана это переживать (см. §5). `paused` — задача, к которой намерены
-вернуться: валидна для привязки, но discovery её не предлагает.
+`branch` is a hint, not an identity. Renaming the branch makes it stale, and the resolution
+procedure must handle that (see §5). `paused` means a task we intend to return to:
+it is valid for binding, but discovery does not suggest it.
 
 #### `journal/`
 
-Append-oriented история: решения, эксперименты, тупики, важные результаты исследования,
-изменения scope, причины архитектурных решений.
+Append-oriented history: decisions, experiments, dead ends, important research findings,
+scope changes, and reasons for architectural decisions.
 
-**Журнал — каталог, а не файл**: одна запись — один файл. Новый формат имени:
-`<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`. `hash32` — первые 32 строчных
-шестнадцатеричных символа SHA-256 полного session id; ordinal для пары timestamp/hash
-начинается с `000001`. Полный session id остаётся в метаданных.
+**The journal is a directory, not a file**: one entry — one file. The new filename format is
+`<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`. `hash32` is the first 32 lowercase hexadecimal
+characters of the full session ID's SHA-256 hash; the ordinal for a timestamp/hash pair starts
+at `000001`. The full session ID remains in the metadata.
 
 ```md
 journal/20260909T182014Z-8231adf1ce782ae5bd7a52c329e1ceae-000001.md
@@ -190,162 +193,161 @@ Rejected: the abstraction does not expose atomic compare-and-set,
 which the current synchronization path requires.
 ```
 
-CLI полностью записывает временный файл в том же каталоге, выполняет `flush`/`fsync`,
-затем публикует его через `link` без перезаписи существующего пути. Если имя занято,
-пробует следующий шестизначный ordinal. Это не общий счётчик задачи и не предварительная
-проверка свободного имени: решение о публикации принимает эксклюзивная операция.
-Читатель видит полную запись, параллельные checkpoint не затирают друг друга.
-Первые восемь символов session id не считаются уникальными; повтор при коллизии
-защищает и от совпадения хешей. Общей блокировки журнала нет.
+The CLI fully writes a temporary file in the same directory, performs `flush`/`fsync`, then
+publishes it using `link` without overwriting an existing path. If the name is taken, it tries
+the next six-digit ordinal. This is neither a shared task counter nor a preliminary check for
+an available name: the exclusive operation decides whether publication succeeds. Readers see
+a complete entry, and concurrent checkpoints do not overwrite each other. The first eight
+characters of a session ID are not assumed to be unique; retrying on collision also protects
+against matching hashes. There is no shared journal lock.
 
-Канонический читатель — `agent-system task journal [slug]`; без slug используется
-привязка текущего чата. Legacy `journal.md` читается первым, затем старые и новые
-записи `journal/` в проверенном порядке. Неоднозначное старое имя `<ts>-<sid8>[-N].md`
-разбирается с учётом полного `session` в метаданных, включая числовой суффикс, если он
-есть. Повреждённые записи вызывают ошибку; молчаливого пропуска нет. Старые журналы
-не конвертируются; новые записи всегда идут в `journal/`.
+The canonical reader is `agent-system task journal [slug]`; omitting the slug uses the current
+chat's binding. Legacy `journal.md` is read first, followed by old and new `journal/` entries
+in a validated order. An ambiguous old filename `<ts>-<sid8>[-N].md` is parsed using the full
+`session` in its metadata, including the numeric suffix if present. Corrupted entries raise
+an error; none are silently skipped. Old journals are not converted; new entries always go
+into `journal/`.
 
-Порядок показа детерминирован: UTC timestamp, hash32 сессии, числовой ordinal и имя
-файла при равенстве предыдущих полей. Причинный порядок между машинами
-не гарантируется: часы могут расходиться. `--stage` проверяется целиком
-по `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; пробелы, `#` и переводы строк отвергаются.
+Display order is deterministic: UTC timestamp, session hash32, numeric ordinal, then filename
+if the preceding fields are equal. Causal order across machines is not guaranteed: clocks may
+differ. `--stage` must fully match `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; spaces, `#`, and newlines
+are rejected.
 
-После удаления `handoff.md` журнал несёт и то, что раньше жило в снимке:
+With `handoff.md` removed, the journal also holds what used to be in the snapshot:
 
-- незавершённая работа и неочевидные следующие действия;
-- **состояние рабочего дерева** — чисто или грязно и **почему**.
+- unfinished work and non-obvious next actions;
+- **working tree state** — clean or dirty, and **why**.
 
-Последнее выделено намеренно. Новая сессия увидит изменения в `git status`, но не поймёт,
-брошены они или намеренно оставлены на середине. Это ровно тот класс фактов, который
-не восстанавливается из файлов.
+The latter is highlighted deliberately. A new session sees changes in `git status` but cannot
+tell whether they were abandoned or intentionally left unfinished. This is precisely the kind
+of fact that cannot be reconstructed from files.
 
-**Чтение — целиком, при каждом возобновлении**, после чего проверяется фактическое состояние
-репозитория. Никакой механики частичного чтения — отметок, курсоров, поиска точки
-продолжения — в v1 нет.
+**Read the entire journal on every resumption**, then check the repository's actual state.
+v1 has no partial-reading mechanism — no markers, cursors, or search for a continuation point.
 
-Журнал **пер-таск**, а не общий. Завершённые задачи сохраняются (§7), но их журналы
-не загружаются при обычном старте. Читается целиком только журнал выбранной задачи;
-длина отдельного журнала не ограничена самим фактом завершения других задач.
+The journal is **per-task**, not shared across tasks. Completed tasks are retained (§7), but
+their journals are not loaded during normal startup. Only the selected task's journal is read
+in full; completing other tasks does not, by itself, limit the length of an individual journal.
 
-##### Ротация: критерий записан, механика не вводится
+##### Rotation: record the criterion without introducing a mechanism
 
-Если журнал разрастётся, простого `journal-2` **недостаточно**: действующий журнал обязан
-начинаться со сводки актуального состояния из архивируемых записей. Иначе ротация тихо
-выбросит ранние решения-ограничения — а их ценность со временем растёт, в отличие от
-рутинных записей о ходе работы.
+If a journal grows large, simply creating `journal-2` is **not enough**: the current journal
+must start with a summary of the current state derived from the entries being archived.
+Otherwise, rotation silently discards early decisions that impose constraints — their value
+grows over time, unlike routine progress entries.
 
-Механику уплотнения заранее не строить. Разросшийся журнал — **сигнал**: либо задачу
-следовало разбить, либо в него пишут повествование вместо решений. Обрезка по хвосту
-заглушила бы сигнал, не устранив причину.
+Do not build compaction machinery in advance. A large journal is a **signal**: either the task
+should have been split, or the journal is recording narrative instead of decisions. Keeping
+only the tail would suppress that signal without addressing its cause.
 
 ---
 
 ## 3. Durability
 
-Модель «работать всю сессию → сериализовать состояние в конце» ненадёжна: при исчерпании
-лимита или крахе хода на сериализацию уже нет. Именно тот сценарий, ради которого система
-строится, отказывает первым.
+The model of “work throughout the session → serialize state at the end” is unreliable: when
+a limit is reached or a crash occurs, there is no turn left for serialization. The very scenario
+this system was built for is the first to fail.
 
-Сохраняется только явно записанное состояние; частота ручных checkpoint не задана.
+Only explicitly recorded state is preserved; no frequency is prescribed for manual checkpoints.
 
-### 3.1 Checkpoint — ручная операция
+### 3.1 Checkpoint — a manual operation
 
-Checkpoint вызывается **только вручную по явной команде пользователя или агента**
-через скилл `checkpoint` (`.agents/skills/checkpoint/`). Завершение этапа или работы,
-результат сабагента, прерывание, переключение харнесса и приближение лимита
-не вызывают checkpoint автоматически и не требуют его обязательного вызова.
+A checkpoint is invoked **only manually, on an explicit command from the user or agent**
+through the `checkpoint` skill (`.agents/skills/checkpoint/`). Finishing a stage or task,
+a subagent result, interruption, switching harnesses, and approaching a limit neither
+trigger a checkpoint automatically nor require one to be invoked.
 
-Явно вызванный checkpoint записывает main после оценки результатов; сабагенты
-не пишут canonical task state. Если запись упала, checkpoint не считается
-сохранённым: main сообщает об ошибке. Без явной команды запись не является
-условием перехода к следующему этапу.
+Main writes an explicitly invoked checkpoint after evaluating the results; subagents do not
+write canonical task state. If writing fails, the checkpoint is not considered saved: main
+reports the error. Without an explicit command, writing a checkpoint is not a prerequisite
+for moving to the next stage.
 
-#### Что пишется в checkpoint
+#### What goes into a checkpoint
 
-Критерий один:
+There is one criterion:
 
-> Всё существенное для продолжения, что **нельзя восстановить из файлов репозитория**.
+> Everything important for continuation that **cannot be reconstructed from repository files**.
 
-Сюда входят: новое решение, принятое намерение (в том числе о следующем шаге), важный
-результат, отвергнутый подход с причиной, завершённый кусок реализации, существенный blocker,
-результат проверок — включая «не запускались».
+This includes a new decision, an adopted intention (including the next step), an important
+result, a rejected approach with its reason, a completed piece of implementation, a significant
+blocker, and verification results — including “not run”.
 
-Намерение попадает в журнал наравне с результатом. Решение «сначала проверить совместимость
-миграции на старых данных, потом реализовывать» не оставляет следа в коде: если оно не
-записано, его не восстановит ни журнал, ни `git status`. Механика чтения сохраняет только
-то, что кто-то записал, — и это единственная защита от потери намерений.
+Intentions belong in the journal alongside results. The decision “first check migration
+compatibility with old data, then implement” leaves no trace in code: if it is not recorded,
+neither the journal nor `git status` can reconstruct it. Reading preserves only what someone
+has written — and that is the only protection against losing intentions.
 
-Чего в записи быть не должно — **полного пересказа всего состояния каждый раз**. Возражение
-чисто практическое: трение на каждой записи и журнал, который перестают перечитывать, потому
-что в нём девять десятых повторов. Записывается дельта — что изменилось на этом этапе.
+An entry must not contain **a complete recap of all state every time**. The objection is purely
+practical: friction on every write and a journal that people stop rereading because nine tenths
+of it are repetition. Record the delta — what changed at this stage.
 
-### 3.2 Чего здесь сознательно нет
+### 3.2 What is deliberately absent
 
-Внутри сессии сабагенты общаются с оркестратором нативно в обоих харнессах — никакие файлы
-для этого не нужны. Всё описанное решает только **межсессионную** непрерывность.
+Within a session, subagents communicate with the orchestrator natively in both harnesses —
+no files are needed. Everything described here addresses **cross-session** continuity only.
 
-Отдельного аварийного лога (`.recovery.jsonl`) и хуков на завершение агентов в v1 **нет**.
-Причина: v1 опирается на ручной checkpoint и не добавляет второй механизм записи.
-Локальный транскрипт может помочь при восстановлении, но его полнота, сохранность и доступность
-другому харнессу не гарантируются. Отказ от recovery-лога — осознанное упрощение,
-а не гарантия отсутствия потерь.
+v1 has **no** separate recovery log (`.recovery.jsonl`) or agent-completion hooks.
+The reason: v1 relies on manual checkpoints and does not add a second writing mechanism.
+A local transcript may help recovery, but its completeness, preservation, and availability
+to another harness are not guaranteed. Omitting a recovery log is a deliberate simplification,
+not a guarantee of zero loss.
 
-Деградация при аварийном завершении:
-
-```text
-точка восстановления — последний успешно записанный checkpoint, если он есть
-    ↓
-незачекпоинченная работа сверяется с repository state
-    ↓
-при необходимости — доступный транскрипт исходного харнесса
-```
-
-Транскрипт — форензика последней инстанции, а не рабочий канал: для другого харнесса это
-стена шума. Курируемую, читаемую обоими запись даёт только журнал, и заменить его
-нечем — в этом вся его ценность.
-
-Потери контекста не ограничены одним этапом: они зависят от последней явной записи.
-Если checkpoint ещё не вызывался, журнал может не содержать результатов работы.
-Запись на диск переживает обрыв сессии в том же дереве, но не потерю машины. Для переноса
-на другую машину нужны commit и передача кода вместе с task state через git; незакоммиченные
-и untracked-файлы автоматически не переносятся.
-
-### 3.3 `$checkpoint` — явный ручной вызов
-
-Переключение харнесса само по себе не вызывает и не требует checkpoint.
-При начале или возобновлении работы новый харнесс выполняет §2: читает сохранённое
-состояние и сверяет его с Git. Несохранённый контекст может быть потерян.
-
-Процедура skill'а `.agents/skills/checkpoint/`:
+Degradation after an unexpected termination:
 
 ```text
-0. При параллельных записях остановить новые делегации; дождаться или прервать текущие работы и проверить результат.
-1. Прочитать task.md и журнал целиком через agent-system task journal [slug].
-   При ошибке чтения сообщить о повреждении; не пропускать запись.
-2. Проверить git status и relevant diff.
-3. Создать НОВУЮ запись journal/<ts>-<hash32>-<ordinal6>.md со всем существенным, что ещё
-   не отражено: решения, незавершённую работу, неочевидное следующее действие.
-4. Зафиксировать состояние рабочего дерева — чисто или грязно и почему.
+recovery point — the last successfully written checkpoint, if one exists
+    ↓
+work without a checkpoint is checked against repository state
+    ↓
+if needed — an available transcript from the original harness
 ```
 
-Задача для checkpoint берётся из привязки либо задаётся явным slug; в обоих случаях
-она должна существовать со статусом `active` или `paused`. Явный slug не создаёт
-задачу и не обходит проверку статуса. Завершённую задачу сначала явно возобновляют.
+The transcript is forensic evidence of last resort, not a working channel: to another harness,
+it is a wall of noise. Only the journal provides a curated record that both can read, and
+nothing replaces it — that is its entire value.
 
-Процедура выполняется только по явной команде независимо от смены харнесса.
-Автоматических checkpoint и lifecycle-хуков записи нет. Порог остатка контекста
-<=10% сейчас не реализован; возможен только как будущий optional best-effort механизм
-с отдельным включением и изменением контракта.
+Context loss is not limited to one stage: it depends on the last explicit write. If no
+checkpoint has been invoked, the journal may contain no work results. A disk write survives
+a session interruption in the same worktree, but not loss of the machine. Moving to another
+machine requires committing and transferring the code together with task state through Git;
+uncommitted and untracked files are not transferred automatically.
+
+### 3.3 `$checkpoint` — an explicit manual invocation
+
+Switching harnesses does not, by itself, trigger or require a checkpoint. When starting or
+resuming work, the new harness follows §2: it reads saved state and checks it against Git.
+Unsaved context may be lost.
+
+Procedure for the `.agents/skills/checkpoint/` skill:
+
+```text
+0. If writes are concurrent, stop new delegations; wait for or interrupt current work and inspect the result.
+1. Read task.md and the entire journal using agent-system task journal [slug].
+   If reading fails, report corruption; do not skip the entry.
+2. Check git status and the relevant diff.
+3. Create a NEW journal/<ts>-<hash32>-<ordinal6>.md entry containing everything important
+   that is not yet recorded: decisions, unfinished work, non-obvious next actions.
+4. Record working tree state — clean or dirty, and why.
+```
+
+The checkpoint's task is taken from the binding or specified by an explicit slug; in either
+case, it must exist with status `active` or `paused`. An explicit slug neither creates a task
+nor bypasses status validation. A completed task must first be explicitly resumed.
+
+The procedure runs only on an explicit command, regardless of harness switching.
+There are no automatic checkpoints or lifecycle write hooks. A remaining-context threshold
+of <=10% is not implemented; it could only be a future optional best-effort mechanism with
+separate opt-in and a contract change.
 
 ---
 
-## 4. Раскладка репозитория
+## 4. Repository layout
 
-Для исходников CLI поставляемые скиллы `checkpoint` и `migrate-memory` хранятся
-в `skills/`, а его собственная `.agents/` обслуживает разработку и локально gitignored.
-Установщик не читает `.agents/skills/`; чужие скиллы целевого проекта сохраняются.
-Ниже показаны пути установленных скиллов в целевом проекте; копии независимы.
-Правила версионирования установленной `.agents/` не меняют локальную политику клона CLI.
+In the CLI source repository, the shipped `checkpoint` and `migrate-memory` skills live in
+`skills/`; its own `.agents/` supports development and is locally gitignored. The installer
+does not read `.agents/skills/`; unrelated skills in the target project are preserved.
+The layout below shows installed skill paths in the target project; the copies are independent.
+Versioning rules for an installed `.agents/` do not change the CLI clone's local policy.
 
 ```text
 repo/
@@ -358,15 +360,15 @@ repo/
 │   │   ├── implementer.md
 │   │   └── reviewer.md
 │   │
-│   ├── memory/                      -> ~/.agents-memory/<project>  (симлинк, gitignored)
+│   ├── memory/                      -> ~/.agents-memory/<project>  (symlink, gitignored)
 │   │
 │   ├── skills/
 │   │   ├── checkpoint/SKILL.md
 │   │   └── migrate-memory/SKILL.md
 │   │
 │   ├── state/
-│   │   ├── sessions/                # gitignored, привязка чата к задаче
-│   │   │   ├── .locks/              # файлы per-session OS flock
+│   │   ├── sessions/                # gitignored, chat-to-task binding
+│   │   │   ├── .locks/              # per-session OS flock files
 │   │   │   └── 019a3f7c-…           #   {"slug":…,"harness":…,"bound_at":…}
 │   │   ├── tasks/
 │   │   │   └── auth-refactor/
@@ -376,7 +378,7 @@ repo/
 │   │   │           └── <timestamp>-<hash32>-000002.md
 │   │   └── archive/
 │   │
-│   └── runs.jsonl                   # gitignored, локальная телеметрия
+│   └── runs.jsonl                   # gitignored, local telemetry
 │
 ├── tools/
 │   ├── gen_agents.py
@@ -386,87 +388,86 @@ repo/
 ├── .claude/
 │   ├── agents/                      # GENERATED
 │   ├── skills -> ../.agents/skills
-│   └── settings.json                # native settings, если нужны
+│   └── settings.json                # native settings, if needed
 │
 └── .codex/
     ├── agents/                      # GENERATED (*.toml)
     └── config.toml
 ```
 
-В целевом проекте `.agents/` — canonical root для установленных определений агентов, скиллов и portable state.
-`tools/` — трансформации канона в vendor-форматы.
-Generated считаются только `.claude/agents/` и `.codex/agents/`, не деревья целиком.
+In a target project, `.agents/` is the canonical root for installed agent definitions, skills,
+and portable state. `tools/` transforms canonical definitions into vendor formats.
+Only `.claude/agents/` and `.codex/agents/` are generated, not the entire directory trees.
 
-**Симлинк скиллов оставлен**: возражения касались Windows, CI-чекаутов и Docker `COPY`,
-ничего из этого сейчас нет. Замена на детерминированный копир — правка в одну строку
-генератора, canonical source при этом не меняется.
+**The skills symlink is retained**: objections concerned Windows, CI checkouts, and Docker
+`COPY`, none of which are currently in use. Replacing it with a deterministic copier is a
+one-line generator change; the canonical source stays the same.
 
 ---
 
-## 5. Разрешение задачи
+## 5. Task resolution
 
-Задачу выбирает **чат**, а не рабочее дерево и не ветка. Привязка —
-`sessions/<session-id>`, **workspace state, а не task state**, поэтому gitignored.
+The **chat** selects the task, not the worktree or branch. The binding is
+`sessions/<session-id>` — **workspace state, not task state**, so it is gitignored.
 
-Ветка как идентификатор задачи — слишком сильное допущение: бывают несколько задач
-на одной feature-ветке, detached HEAD, исследовательские задачи без ветки, hotfix
-на существующей ветке, worktrees, переименования. Рабочее дерево тоже не годится:
-в одном дереве законно открыто несколько чатов на разных задачах. Поэтому:
+Using a branch as a task identifier assumes too much: there can be multiple tasks on a single
+feature branch, detached HEAD, research tasks without a branch, hotfixes on an existing branch,
+worktrees, and renames. The worktree is not suitable either: multiple chats on different tasks
+may legitimately be open in one worktree. Therefore:
 
 ```text
-sessions/<session-id>  = authoritative pointer, принадлежит чату
-branch                 = advisory hint в task.md
+sessions/<session-id>  = authoritative pointer, owned by the chat
+branch                 = advisory hint in task.md
 ```
 
-**Session id** — идентификатор чата из окружения харнесса, по приоритету:
+**Session ID** is the chat identifier from the harness environment, in priority order:
 `AGENTS_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`/`CODEX_SESSION_ID`.
-Проверяется точное значение целиком: 1–128 ASCII-символов `[A-Za-z0-9._-]`, кроме
-отдельных значений `.` и `..`, а также служебных `.locks`, `.gitkeep`, `.DS_Store` и `.agents-<32 lowercase hex>`.
-Пробелы и переводы строк не обрезаются. Имя файла
-привязки и хеш записи журнала зависят от id, поэтому непрошедшее значение
-**отвергается, а не санитизируется**. Отсутствие id — законный режим без привязки.
+The exact value is validated in full: 1–128 ASCII characters from `[A-Za-z0-9._-]`, excluding
+the standalone values `.` and `..`, and reserved `.locks`, `.gitkeep`, `.DS_Store`, and
+`.agents-<32 lowercase hex>`. Spaces and newlines are not trimmed. The binding filename and
+journal entry hash depend on the ID, so an invalid value is **rejected, not sanitized**.
+A missing ID is a valid mode without a binding.
 
-Процедура на старте сессии:
-
-```text
-session id известен?
-├── нет → работа без привязки, предложить bind
-└── да
-    ├── sessions/<id> есть → slug оттуда → валидировать
-    └── нет
-        ├── ровно одна задача со status: active → предложить, НЕ привязывать молча
-        └── ноль или несколько → показать список, спросить
-```
-
-### Проверка на stale
-
-Привязка не обновляется сама при `git checkout` и переживает удаление задачи, поэтому
-валидация обязательна: существование `tasks/<slug>/task.md`, совпадение `id` с именем
-каталога, `status` ∈ {active, paused}.
+Session startup procedure:
 
 ```text
-привязка валидна?
-├── да → загрузить задачу
-└── нет → НЕ загружать молча; сообщить и уйти в discovery
+is the session ID known?
+├── no → work without a binding; offer bind
+└── yes
+    ├── sessions/<id> exists → take its slug → validate
+    └── does not exist
+        ├── exactly one task with status: active → suggest it, do NOT bind silently
+        └── zero or multiple → show the list and ask
 ```
 
-Расхождение `branch` с текущей веткой — **предупреждение, а не ошибка**: несколько
-задач в одном дереве норма, а branch остаётся advisory, его актуализируют либо
-оставляют пустым.
+### Staleness check
 
-Молчаливая загрузка чужой задачи хуже, чем отсутствие автоматического выбора.
-Молчаливая перепривязка — тоже: `bind` на другую задачу требует явного `--force`.
+A binding does not update automatically on `git checkout` and survives deletion of its task,
+so validation is mandatory: `tasks/<slug>/task.md` must exist, its `id` must match the directory
+name, and `status` must be in {active, paused}.
 
-`bind` и `unbind` держат короткую OS-блокировку `flock` для одного session id на время
-чтения, проверки и изменения привязки. Разные session id работают независимо;
-общей блокировки нет. `--force` разрешает перепривязку, но не обходит блокировку
-или валидацию. Файлы `sessions/.locks/` сохраняются, ОС освобождает блокировку
-при завершении процесса. JSON заменяется атомарно через временный файл и `os.replace`.
+```text
+is the binding valid?
+├── yes → load the task
+└── no → do NOT load silently; report the issue and enter discovery
+```
 
-`task new` резервирует каталог эксклюзивным `mkdir`; второй запуск с тем же slug
-получает отказ. После сбоя может остаться каталог без `task.md`, что обнаруживает
-проверка состояния. Автоматического удаления или перезаписи такого каталога нет:
-перед восстановлением нужно проверить его содержимое.
+A mismatch between `branch` and the current branch is **a warning, not an error**: multiple
+tasks in one worktree are normal, and branch remains advisory; update it or leave it empty.
+
+Silently loading the wrong task is worse than making no automatic selection. Silent rebinding
+is also unacceptable: `bind` to a different task requires an explicit `--force`.
+
+`bind` and `unbind` hold a short OS `flock` for one session ID while reading, validating, and
+changing the binding. Different session IDs operate independently; there is no shared lock.
+`--force` permits rebinding but bypasses neither locking nor validation. Files in
+`sessions/.locks/` are retained; the OS releases the lock when the process exits. JSON is
+replaced atomically using a temporary file and `os.replace`.
+
+`task new` reserves the directory with an exclusive `mkdir`; a second invocation with the same
+slug is rejected. A crash may leave a directory without `task.md`, which the state checker
+reports. Such a directory is not automatically deleted or overwritten: inspect its contents
+before recovery.
 
 ---
 
@@ -475,69 +476,68 @@ session id известен?
 ```text
 SESSION START
     ↓
-resolve task (sessions/<id> → validate → discovery, без молчаливого выбора)
+resolve task (sessions/<id> → validate → discovery, without silent selection)
     ↓
-load task.md + agent-system task journal [slug] целиком, без пропуска ошибок
+load task.md + agent-system task journal [slug] in full, without skipping errors
     ↓
 inspect repository state
     ↓
 WORK
     ↓
-есть явная команда checkpoint? → да: main → НОВЫЙ journal/<ts>-<hash32>-<ordinal6>.md
+explicit checkpoint command? → yes: main → NEW journal/<ts>-<hash32>-<ordinal6>.md
     ↓
-continue work / завершение / переключение харнесса без обязательной записи
+continue work / finish / switch harnesses without a mandatory write
 ```
 
-В v1 startup/resume — явная процедура main из `AGENTS.md`, без обязательных хуков.
-При будущей автоматизации session-end хуки могут дополнять её телеметрией и валидацией,
-но не являются источником состояния или условием восстановления.
+In v1, startup/resume is an explicit main procedure defined in `AGENTS.md`, with no mandatory
+hooks. If automated in the future, session-end hooks may add telemetry and validation, but
+they are neither a source of state nor a prerequisite for recovery.
 
 ---
 
-## 7. Жизненный цикл завершённой задачи
+## 7. Completed task lifecycle
 
-Во время работы `.agents/state/tasks/<slug>/` коммитится в ветку задачи.
+During work, `.agents/state/tasks/<slug>/` is committed to the task branch.
 
-После завершения `task.md` и `journal/` сохраняются в `.agents/state/tasks/<slug>/`,
-в том числе после merge/squash. Завершённые журналы не читаются при обычном старте сессии:
-к ним обращаются по необходимости. Для возобновления задачи явно выбрать её, проверить
-текущее состояние кода, обновить `branch` и `status`, затем привязать чат.
+After completion, `task.md` and `journal/` remain in `.agents/state/tasks/<slug>/`, including
+after merge/squash. Completed journals are not read during normal session startup; consult
+them as needed. To resume a task, select it explicitly, inspect the current code, update
+`branch` and `status`, then bind the chat.
 
-Status меняется на done/abandoned, привязки к этой задаче снимаются. Оставшаяся живая
-привязка к завершённой задаче — ошибка состояния, её сообщает валидатор.
-`status: paused` — задача, к которой намерены вернуться: она валидна для привязки,
-но discovery её не предлагает.
+Status changes to done/abandoned, and bindings to the task are removed. A remaining live
+binding to a completed task is a state error reported by the validator. `status: paused`
+means a task we intend to return to: it is valid for binding, but discovery does not suggest it.
 
-### Правило выпуска
+### Knowledge publication rule
 
-Завершение задачи — **шаг выпуска знаний**. Без него важные находки останутся только
-в журнале, который следующие задачи обычно не читают.
+Task completion is a **knowledge publication step**. Without it, important findings remain
+only in a journal that subsequent tasks do not normally read.
 
-При завершении журнал проходится и раскладывается по двум адресам:
+At completion, review the journal and distribute knowledge to two destinations:
 
-| Что | Куда | Почему |
+| What | Where | Why |
 |---|---|---|
-| решение по коду и архитектуре, которое должны знать люди | документация проекта, в git | это знание проекта, а не агента |
-| как работать с этим репозиторием: где что лежит, что долго собирается, грабли в тестах | `.agents/memory/` (§2.1) | нужно агенту, людям не интересно, в истории проекта не место |
-| ход конкретной задачи | остаётся в журнале задачи | сохранён для возврата, не засоряет память проекта |
+| code and architecture decisions that people need to know | project documentation, in Git | this is project knowledge, not agent knowledge |
+| how to work with this repository: where things are, what builds slowly, testing pitfalls | `.agents/memory/` (§2.1) | useful to the agent, of no interest to people, does not belong in project history |
+| progress of the specific task | remains in the task journal | retained for returning to the task without cluttering project memory |
 
-Третья строка не менее важна первых двух: если выпускать всё, память превратится
-во второй журнал и перестанет быть полезной.
-
----
-
-## 8. `AGENTS.md` и `CLAUDE.md`
-
-`AGENTS.md` — canonical project contract, только правила, применимые к обоим харнессам:
-architecture rules, coding constraints, testing expectations, delegation policy,
-state lifecycle, definition of done, repository conventions.
-
-`CLAUDE.md` — мост через import, а не вторая копия. Claude-specific настройки, если понадобятся,
-добавляются поверх импортированного.
+The third row is as important as the first two: publishing everything would turn memory into
+a second journal and make it useless.
 
 ---
 
-## 9. Каноническая схема агента
+## 8. `AGENTS.md` and `CLAUDE.md`
+
+`AGENTS.md` is the canonical project contract and contains only rules applicable to both
+harnesses: architecture rules, coding constraints, testing expectations, delegation policy,
+state lifecycle, definition of done, and repository conventions.
+
+`CLAUDE.md` is a bridge through an import, not a second copy. Claude-specific settings, if
+needed, are added on top of the imported content.
+
+---
+
+## 9. Canonical agent schema
 
 Markdown + YAML frontmatter:
 
@@ -575,83 +575,84 @@ Write or update tests together with the implementation.
 Verify the resulting behavior before returning.
 ```
 
-### Оси конфигурации
+### Configuration axes
 
-**`models`** — **явные имена моделей на харнесс**, а не абстрактный тир.
+**`models`** contains **explicit model names per harness**, not an abstract tier.
 
-Индирекция здесь возникает по одной причине: одно каноническое поле должно развернуться
-в два разных значения, потому что имена моделей у харнессов разные. Этого достаточно решить
-парой строк в самом файле агента — читаете определение и сразу видите, что запустится.
+There is only one reason for indirection here: one canonical field must expand to two different
+values because model names differ between harnesses. A couple of lines in the agent file solve
+that problem — read the definition and immediately see what will run.
 
-Тир-абстракция (`premium/standard/fast` + таблица маппинга) окупается, когда агентов много
-и «перевести все standard на другую модель» становится реальной bulk-операцией. При трёх
-ролях правка в трёх файлах дешевле, чем содержание словаря, который надо помнить.
-Вводить, когда набор вырастет.
+A tier abstraction (`premium/standard/fast` + a mapping table) pays off when there are many
+agents and “move every standard agent to another model” becomes a real bulk operation. With
+three roles, editing three files costs less than maintaining a dictionary that must be kept
+in mind. Introduce it when the set grows.
 
-**Модель оркестратора в канон не входит.** Это конфигурация сессии: `/model` в Claude Code,
-`model` в `.codex/config.toml`. Она меняется на ходу по ситуации — прогонять её через
-генератор бессмысленно. Задаётся руками там, где живёт.
+**The orchestrator model is not part of the canonical definitions.** It is session configuration:
+`/model` in Claude Code, `model` in `.codex/config.toml`. It changes as circumstances require —
+running it through a generator serves no purpose. Set it manually where it belongs.
 
-**`effort`** — `high | medium | low`. Требуемый reasoning effort, ось независимая от модели:
-допустимы только сочетания, поддерживаемые выбранной моделью и версией харнесса.
-Адаптер валидирует итоговую пару после `overrides`; неподдерживаемое сочетание — ошибка,
-а не молчаливое изменение модели или effort.
+**`effort`** is `high | medium | low`. It specifies the required reasoning effort, independently
+of the model: only combinations supported by the selected model and harness version are valid.
+The adapter validates the resulting pair after `overrides`; an unsupported combination is an
+error, not a silent change to the model or effort.
 
-**`capabilities`** — `filesystem-read | filesystem-write | code-search | shell | vcs | web`.
-Описывают intent и требуемые ограничения роли, но сами по себе не обеспечивают права.
-Адаптер фиксирует, какие ограничения обеспечиваются нативно, а какие остаются инструкцией.
-`shell` и `vcs` могут менять файлы: отсутствие `filesystem-write` нельзя обеспечивать только
-отключением Edit/Write. Если требуемую границу нельзя выразить нативно, генерация завершается
-ошибкой с объяснением; молчаливого расширения прав нет. `overrides` проходят ту же проверку.
+**`capabilities`** is `filesystem-read | filesystem-write | code-search | shell | vcs | web`.
+Capabilities describe intent and the role's required restrictions, but do not enforce permissions
+on their own. The adapter records which restrictions are enforced natively and which remain
+instructions. `shell` and `vcs` can change files: the absence of `filesystem-write` cannot be
+enforced merely by disabling Edit/Write. If a required boundary cannot be expressed natively,
+generation fails with an explanation; permissions are never silently expanded. `overrides`
+undergo the same validation.
 
-Вот **здесь** абстракция делает настоящую работу: у харнессов разные наборы инструментов
-и разные модели разрешений, и `filesystem-write` действительно нужно переводить в конкретную
-конфигурацию. Имя модели переводить не надо — это подстановка, и её хочется видеть глазами.
+This is **where** abstraction does real work: harnesses have different toolsets and permission
+models, and `filesystem-write` really must be translated into specific configuration. A model
+name needs no translation — it is a substitution that should be visible directly.
 
-Отдельного `write_access` нет: `filesystem-write` уже кодирует то же разрешение.
-Два поля на одно право — источник рассинхрона.
+There is no separate `write_access`: `filesystem-write` already encodes the same permission.
+Two fields for one permission are a source of inconsistency.
 
 ### `overrides`
 
-Escape hatch для behavioural divergence между харнессами. Правила:
+An escape hatch for behavioral divergence between harnesses. Rules:
 
-1. по умолчанию пустые;
-2. canonical prompt сначала тестируется без дельты;
-3. override добавляется только при **наблюдаемом** расхождении;
-4. желательна regression/eval, объясняющая существование override;
-5. override не должен вырастать во второй полноценный prompt fork.
+1. Empty by default.
+2. Test the canonical prompt without a delta first.
+3. Add an override only for **observed** divergence.
+4. Prefer a regression test/eval that explains why the override exists.
+5. An override must not grow into a second complete prompt fork.
 
-Цель — `shared semantics + small compatibility deltas`, а не два разных промпта.
+The goal is `shared semantics + small compatibility deltas`, not two different prompts.
 
-### Поле `skills:` в v1 не используется
+### The `skills:` field is not used in v1
 
-Между «skill доступен агенту», «обнаружим агентом», «выбирается динамически»,
-«предзагружен в контекст сабагента» и «обязателен для роли» — разные семантики,
-которые не следует склеивать преждевременно.
+“Available to the agent”, “discoverable by the agent”, “selected dynamically”, “preloaded into
+the subagent's context”, and “required for the role” have different meanings that should not
+be combined prematurely.
 
-Skills выбираются нативным механизмом харнесса по их собственным `description` либо
-вызываются явно. Если позже понадобится жёсткая зависимость — вводится отдельное поле
-с определённой семантикой (`required_skills:`), после проверки поведения обоих харнессов.
+Skills are selected by the harness's native mechanism based on their own `description`, or
+invoked explicitly. If a strict dependency becomes necessary later, introduce a separate field
+with defined semantics (`required_skills:`), after checking both harnesses' behavior.
 
 ---
 
-## 10. Skills и правило авторинга
+## 10. Skills and the authoring rule
 
-Формат — Agent Skills specification, без изменений:
+The format is the Agent Skills specification, unchanged:
 
 ```text
 .agents/skills/<name>/
-├── SKILL.md      core workflow, decision logic, navigation, инварианты
-├── references/   большие чеклисты, стандарты, глубокая документация
-├── scripts/      детерминированная автоматизация, валидация, генерация
-└── assets/       шаблоны, статические ресурсы
+├── SKILL.md      core workflow, decision logic, navigation, invariants
+├── references/   large checklists, standards, detailed documentation
+├── scripts/      deterministic automation, validation, generation
+└── assets/       templates, static resources
 ```
 
-Не все директории обязательны.
+Not every directory is required.
 
-### Правило
+### Rule
 
-> Canonical prompt описывает намерение и процедуру, а не конкретный API харнесса.
+> A canonical prompt describes intent and procedure, not a specific harness API.
 
 ```text
 GOOD: Inspect the changed files.
@@ -661,241 +662,242 @@ GOOD: Delegate independent investigation when useful.
 BAD:  Call the Agent tool with subagent_type=explorer.
 ```
 
-### `description` против body
+### `description` versus body
 
 ```text
 description = WHAT + WHEN     routing metadata
-body        = HOW             процедура
+body        = HOW             procedure
 ```
 
-Указывать условия применимости в `description` **не запрещено, а требуется** — это его
-прямое назначение. Ограничение касается только body: не зашивать имена механизмов
-конкретного харнесса.
+Stating applicability conditions in `description` is **required, not prohibited** — that is
+its purpose. The restriction applies only to the body: do not hardcode the names of a specific
+harness's mechanisms.
 
-*(Ранняя версия этого правила обосновывалась тем, что Codex может не иметь диспетчеризации
-скиллов, и запрещала обороты «применяется, когда…». Обоснование неверно — см. §16 — а запрет
-бил по `description`. Действует формулировка выше.)*
+*(An early version justified this rule by suggesting that Codex might not have skill dispatch,
+and prohibited wording such as “use when…”. That justification was incorrect — see §16 — and
+the prohibition harmed `description`. The rule above supersedes it.)*
 
 ---
 
-## 11. Инварианты и параллельная работа
+## 11. Invariants and parallel work
 
-### Одновременная работа над разными фичами
+### Working on different features simultaneously
 
-Поддерживается и является основным сценарием параллельного использования — через **git
-worktrees**, по одному харнессу на дерево:
+This is supported and is the primary scenario for parallel use — through **Git worktrees**,
+with one harness per worktree:
 
 ```text
 repo/              main worktree    → Claude, feature A
 ../repo-billing/   linked worktree  → Codex,  feature B
 ```
 
-Дизайн сходится на этом без доработок:
+The design supports this without changes:
 
-- `sessions/` gitignored → **не разделяется между worktrees**, у каждого свой;
-- `.agents/state/tasks/<slug>/` коммитится → состояние задачи A живёт на ветке A,
-  задачи B — на ветке B; изменения изолированы до merge, где обычные конфликты
-  всё ещё возможны;
-- симлинк скиллов относительный → в каждом дереве резолвится независимо.
+- `sessions/` is gitignored → **not shared between worktrees**; each has its own;
+- `.agents/state/tasks/<slug>/` is committed → task A's state lives on branch A and task B's
+  on branch B; changes remain isolated until merge, where ordinary conflicts are still possible;
+- the skills symlink is relative → it resolves independently in each worktree.
 
-Следствия, которые стоит знать:
+Consequences to keep in mind:
 
-- **Определения агентов и скиллов версионируются веткой.** Правка скилла на ветке A не видна
-  на ветке B до мержа. Для редко меняющихся файлов приемлемо; при активной правке скиллов
-  держать их отдельными мелкими коммитами в `main` и подтягивать.
-- **`runs.jsonl` тоже per-worktree**, телеметрия фрагментируется. Для сравнения поведения
-  харнессов логи сопоставляются явно: разные задачи и ревизии сами по себе чистого
-  эксперимента не дают.
+- **Agent and skill definitions are versioned by branch.** A skill change on branch A is not
+  visible on branch B until merge. This is acceptable for infrequently changed files; when
+  actively editing skills, keep them in separate small commits on `main` and pull them in.
+- **`runs.jsonl` is also per-worktree**, so telemetry is fragmented. To compare harness
+  behavior, logs must be compared explicitly: different tasks and revisions do not, by
+  themselves, constitute a controlled experiment.
 
-### Инварианты
+### Invariants
 
-**Задача принадлежит чату, а не рабочему дереву.** Несколько задач в одном дереве
-и несколько чатов на одной задаче — норма. Прежний инвариант «одна активная задача
-и одна main-сессия на дерево» снят: он защищал ровно от одного вредного случая —
-два оркестратора пишут в один `journal.md` — а этот случай устранён форматом.
+**The task belongs to the chat, not the worktree.** Multiple tasks in one worktree and multiple
+chats on one task are normal. The earlier invariant of “one active task and one main session
+per worktree” has been removed: it protected against exactly one harmful case — two
+orchestrators writing to one `journal.md` — and the format has eliminated that case.
 
-**Журнал append-only на уровне каталога.** Одна запись — один файл
-`journal/<ts>-<hash32>-<ordinal6>.md`; существующие записи не редактируются.
-Полная запись временного файла и `fsync` предшествуют эксклюзивной публикации;
-при коллизии имени выбирается следующий ordinal (§2.2). Общего счётчика задачи
-и общей блокировки журнала нет. Привязки одной сессии сериализует короткий OS `flock`.
+**The journal is append-only at the directory level.** One entry — one file,
+`journal/<ts>-<hash32>-<ordinal6>.md`; existing entries are not edited. The temporary file is
+written in full and `fsync` completes before exclusive publication; a name collision selects
+the next ordinal (§2.2). There is no shared task counter or shared journal lock. A short OS
+`flock` serializes bindings for the same session.
 
-**Правки `task.md` согласует main задачи** — смена `status` и правка scope.
-Атомарная замена файла не разрешает содержательные конфликты между чатами.
+**The task's main coordinates changes to `task.md`** — `status` changes and scope edits.
+Atomic file replacement does not resolve substantive conflicts between chats.
 
-**Canonical task state пишет только main.** Внутри одной сессии параллельным implementer
-назначаются непересекающиеся области; перед явно вызванным `$checkpoint` запись прекращают
-также сабагенты и фоновые процессы.
+**Only main writes canonical task state.** Within a session, concurrent implementers are
+assigned non-overlapping areas; subagents and background processes also stop writing before
+an explicitly invoked `$checkpoint`.
 
-**`runs.jsonl` никогда не является каноническим состоянием.**
+**`runs.jsonl` is never canonical state.**
 
-Новый протокол не использует общий advisory-файл `.agents/state/LOCK`.
-Оставшийся legacy `LOCK` автоматически не удаляется: валидатор предупреждает,
-а перед ручным удалением проверяют, что старая сессия больше не работает.
-Legacy `ACTIVE` остаётся кандидатом; успешный `bind` именно к указанной в нём задаче
-снимает его только при отсутствии `LOCK`. Привязка к другой задаче и наличие `LOCK`
-сохраняют `ACTIVE`. После проверки старой сессии и ручного удаления `LOCK` соответствующий
-`bind` повторяют. Оба legacy-файла сохраняют gitignore-правила до завершения миграции.
-Они не заменяют per-session OS `flock`.
+The new protocol does not use the shared advisory file `.agents/state/LOCK`. A remaining
+legacy `LOCK` is not removed automatically: the validator warns, and before removing it
+manually, verify that the old session is no longer running. Legacy `ACTIVE` remains a
+candidate; a successful `bind` to the exact task it names removes it only when `LOCK` is absent.
+Binding to another task or the presence of `LOCK` preserves `ACTIVE`. After checking the old
+session and manually removing `LOCK`, repeat the corresponding `bind`. Both legacy files
+retain their gitignore rules until migration is complete. They do not replace per-session
+OS `flock`.
 
-> **Автоматический GC привязок** не реализован: чат мог быть привязан к задаче,
-> завершённой из другого окна, и удалять его файл молча нельзя, пока никто не спросил.
-> Обход, который такой GC получит готовым, уже выделен в `check_state.gc_candidates`.
+> **Automatic binding GC** is not implemented: a chat might be bound to a task completed
+> from another window, and its file cannot be silently removed without being asked.
+> The traversal that such a GC would reuse is already extracted into `check_state.gc_candidates`.
 
 
 ---
 
-## 12. Агенты v1
+## 12. v1 agents
 
-Три роли с явно различающейся ответственностью.
+Three roles with clearly distinct responsibilities.
 
-**`explorer`** — codebase investigation, documentation research, поиск существующих паттернов,
-трассировка зависимостей, сбор фактов. По умолчанию не меняет production-код.
+**`explorer`** — codebase investigation, documentation research, finding existing patterns,
+tracing dependencies, and gathering facts. Does not change production code by default.
 
-**`implementer`** — реализация, тесты вместе с ней, локальная верификация, точечные фиксы.
-Тесты — часть реализации, а не отдельная последующая фаза.
+**`implementer`** — implementation, accompanying tests, local verification, and targeted fixes.
+Tests are part of implementation, not a separate later phase.
 
-**`reviewer`** — независимая проверка: корректность, регрессии, нарушенные инварианты,
-security-чувствительные изменения, адекватность тестов, выход за scope. Изучает фактическое
-состояние репозитория, а не только сводку implementer'а. По умолчанию найденное сам не чинит.
+**`reviewer`** — independent verification: correctness, regressions, broken invariants,
+security-sensitive changes, test adequacy, and scope violations. Inspects the repository's
+actual state, not just the implementer's summary. Does not fix findings by default.
 
-### Почему нет `tester`
+### Why there is no `tester`
 
-Тесты, выведенные только из реализации, рискуют воспроизвести её ошибки независимо от роли
-автора. Для старта достаточно: implementer пишет реализацию с тестами → reviewer независимо
-оценивает их адекватность, отталкиваясь от требований.
+Tests derived only from the implementation risk reproducing its errors, regardless of the
+author's role. Initially, this is sufficient: the implementer writes code and tests → the
+reviewer independently assesses their adequacy against the requirements.
 
-Отдельные роли (`test-designer`, `security-reviewer`, `integration-verifier`) добавляются,
-когда реальные задачи покажут потребность в независимом контексте.
+Separate roles (`test-designer`, `security-reviewer`, `integration-verifier`) are added when
+real tasks demonstrate a need for independent context.
 
-### Почему нет `architect`
+### Why there is no `architect`
 
-Добавляется, когда возникнет повторяющийся класс задач с cross-component design, изменениями
-публичного API или модели данных, границами архитектуры, планированием миграций, высокой
-неоднозначностью. До этого планирование выполняет main.
+Add this role when a recurring class of tasks requires cross-component design, public API
+or data model changes, architectural boundaries, migration planning, or involves high
+ambiguity. Until then, main handles planning.
 
 ---
 
 ## 13. Complexity gate
 
-Делегирование определяется семантическими сигналами, а не ощущением модели.
+Delegation is determined by semantic signals, not the model's impression.
 
-**TRIVIAL** — нет изменения публичного контракта, нет schema/миграции, нет auth/security-логики,
-нет concurrency и распределённого состояния, нет cross-component инварианта, паттерн реализации
-очевиден, низкая неоднозначность.
-Ветка: `main или implementer → verification`. Reviewer опционален.
+**TRIVIAL** — no public contract change, no schema/migration, no auth/security logic, no
+concurrency or distributed state, no cross-component invariant, an obvious implementation
+pattern, and low ambiguity.
+Path: `main or implementer → verification`. Reviewer is optional.
 
-**NORMAL** — default; задача не очевидно тривиальна и не содержит complex-сигналов.
-Ветка: `explorer если нужен → implementer → reviewer`.
+**NORMAL** — the default; the task is not obviously trivial and has no complex signals.
+Path: `explorer if needed → implementer → reviewer`.
 
-**COMPLEX** — изменение публичного API/протокола, миграция схемы, риск потери данных,
-auth/permissions, concurrency, распределённое состояние, cross-service контракт, изменение
-архитектурной границы, высокая неоднозначность требований, новая стратегия реализации.
-Ветка: `explorer → planning/architect если есть → implementer → reviewer`.
+**COMPLEX** — a public API/protocol change, schema migration, risk of data loss,
+auth/permissions, concurrency, distributed state, a cross-service contract, an architectural
+boundary change, highly ambiguous requirements, or a new implementation strategy.
+Path: `explorer → planning/architect if available → implementer → reviewer`.
 
-### Правила gate
+### Gate rules
 
-Количество изменённых файлов — **слабый** сигнал. Переименовать 20 сгенерированных файлов
-может быть trivial; поменять одну строку в логике авторизации — complex.
+The number of changed files is a **weak** signal. Renaming 20 generated files may be trivial;
+changing one line of authorization logic may be complex.
 
-При неуверенности — `NORMAL`. Явный override пользователя или orchestration policy разрешён
-в обе стороны.
+When uncertain, choose `NORMAL`. An explicit user or orchestration policy override is allowed
+in either direction.
 
 ---
 
-## 14. Fix loop и orchestration
+## 14. Fix loop and orchestration
 
-Findings ревьюера возвращаются implementer'у: `implement → review → fix → review`.
-По умолчанию максимум 2–3 корректирующих раунда.
+Reviewer findings return to the implementer: `implement → review → fix → review`.
+The default maximum is 2–3 corrective rounds.
 
-После этого main **диагностирует причину** несходимости, а не эскалирует автоматически
-по достижении числового лимита:
+After that, main **diagnoses why the process is not converging**, instead of escalating
+automatically upon reaching a numeric limit:
 
 ```text
-неясное требование        → спросить пользователя
-техническая неизвестность → explorer / планирование main (architect — после введения роли)
-implementation thrashing  → остановить цикл и суммировать
-фундаментальная проблема  → вернуться к планированию
+unclear requirement      → ask the user
+technical unknown        → explorer / main's planning (architect once the role is introduced)
+implementation thrashing → stop the loop and summarize
+fundamental problem      → return to planning
 ```
 
-Orchestration в v1 — policy-слой поверх main-сессии: `understand → implement →
-independent review → fix if needed → verify`, но без обязательной многоступенчатой цепочки
-на каждую мелкую задачу; какие стадии нужны, решает gate.
+In v1, orchestration is a policy layer over the main session: `understand → implement →
+independent review → fix if needed → verify`, without a mandatory multistage chain for every
+small task; the gate determines which stages are needed.
 
-Отдельный постоянный `orchestrator`-агент не создаётся: main-сессия соответствующего
-харнесса и есть оркестратор.
+No separate permanent `orchestrator` agent is created: the corresponding harness's main
+session is the orchestrator.
 
 ---
 
 ## 15. Generator, adapters, drift
 
 ```text
-agents/*.md            (в подключённом проекте: .agents/agents/*.md)
+agents/*.md            (in an installed project: .agents/agents/*.md)
         ├── .claude/agents/*.md
         └── .codex/agents/*.toml
 ```
 
-Формат Codex подтверждён по текущей документации: project-агенты — standalone TOML-файлы
-в `.codex/agents/` (личные — в `~/.codex/agents/`); см. [официальную документацию](https://learn.chatgpt.com/docs/agent-configuration/subagents).
-В проверках фиксируются поддерживаемые версии харнессов и загрузка generated-агента
-реальным runtime, а не только корректность TOML/YAML. Адаптер всё равно нужен, чтобы будущее
-изменение vendor-формата не трогало канон.
+The Codex format has been confirmed against the current documentation: project agents are
+standalone TOML files in `.codex/agents/` (personal agents in `~/.codex/agents/`); see the
+[official documentation](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+Verification records the supported harness versions and confirms that the actual runtime
+loads the generated agent, rather than only checking valid TOML/YAML. The adapter is still
+needed so a future vendor format change does not affect the canonical definitions.
 
-Генератор детерминирован, поддерживает `generate` и `--check`. Generated-артефакты коммитятся;
-CI выполняет `--check` и падает, если канон изменён, а выход — нет.
-`--check` не меняет файлы и обнаруживает также устаревшие generated-файлы; orphan cleanup
-удаляет только артефакты, чьё владение генератором подтверждено manifest или маркером.
-Pre-commit hook может запускать генерацию для удобства, но authoritative enforcement — CI.
+The generator is deterministic and supports `generate` and `--check`. Generated artifacts
+are committed; CI runs `--check` and fails if the canonical source changed but the output did
+not. `--check` does not change files and also detects stale generated files; orphan cleanup
+removes only artifacts whose ownership by the generator is confirmed by a manifest or marker.
+A pre-commit hook may run generation for convenience, but CI is the authoritative enforcement.
 
-### Порядок построения адаптеров
+### Adapter implementation order
 
-Универсальный `capabilities.py` до появления реальных различий не нужен:
+A generic `capabilities.py` is unnecessary before real differences emerge:
 
 ```text
-1. вручную описать один и тот же агент для Claude и Codex;
-2. зафиксировать реальные различия;
-3. реализовать минимальные adapters;
-4. вынести общий capability mapping только при появлении повторяемости.
+1. Manually define the same agent for Claude and Codex.
+2. Record the actual differences.
+3. Implement minimal adapters.
+4. Extract shared capability mapping only when repetition appears.
 ```
 
 ---
 
-## 16. Нативные возможности харнессов
+## 16. Native harness capabilities
 
-Оба харнесса имеют нативные project-subagents и нативные skills с implicit и explicit
-invocation. Следствия:
+Both harnesses have native project subagents and native skills with implicit and explicit
+invocation. Consequently:
 
-- fallback, где одна сессия последовательно симулирует все роли, **не нужен**;
-- генератор имеет две полноценные цели;
-- правило авторинга обосновывается портируемостью, а не отсутствием диспетчеризации (§10).
+- a fallback in which one session sequentially simulates all roles is **unnecessary**;
+- the generator has two fully supported targets;
+- the authoring rule is justified by portability, not a lack of dispatch (§10).
 
-Main-сессия соответствующего харнесса является оркестратором.
+The corresponding harness's main session is the orchestrator.
 
 ---
 
-## 17. Telemetry и evals
+## 17. Telemetry and evals
 
-`.agents/runs.jsonl` — **локальная observability, не portable state**, gitignored.
-Может содержать: task, harness, выбранную ветку gate'а, вызванных агентов, число findings,
-раундов фиксов, результат.
+`.agents/runs.jsonl` provides **local observability, not portable state**, and is gitignored.
+It may contain the task, harness, selected gate path, invoked agents, number of findings,
+fix rounds, and outcome.
 
-Назначение: наблюдать расхождение поведения Claude и Codex, видеть лишнюю делегацию,
-оценивать полезность ролей. Ограничение осознанное: сравнение работает в пределах одного
-рабочего окружения. Агрегация между машинами — отдельная функция, в v1 её нет.
+Its purpose is to observe behavioral divergence between Claude and Codex, identify unnecessary
+delegation, and assess the value of roles. The limitation is deliberate: comparisons work
+within one working environment. Aggregation across machines is a separate feature absent
+from v1.
 
-Телеметрия **не является** regression test. Для portability нужны отдельные проверки:
+Telemetry **is not** a regression test. Portability requires separate checks:
 
 ```text
-один canonical agent → Claude artifact + Codex artifact
+one canonical agent → Claude artifact + Codex artifact
     → schema validation
-    → behavioural smoke case где практично
+    → behavioral smoke case where practical
 ```
 
 ---
 
 ## 18. Integration surface
 
-Вся интеграция между харнессами состоит из:
+All integration between harnesses consists of:
 
 ```text
 git / working tree
@@ -905,145 +907,144 @@ git / working tree
 + .agents/state/tasks/
 ```
 
-Другого канала передачи состояния нет. Телеметрия и транскрипты сессий в него не входят.
-Это архитектурное ограничение, а не недосмотр.
+There is no other state-transfer channel. Telemetry and session transcripts are not part of it.
+This is an architectural constraint, not an oversight.
 
 ---
 
-## 19. Порядок реализации
+## 19. Implementation order
 
-| Этап | Содержание |
+| Stage | Content |
 |---|---|
-| 0 | `.agents/memory/`: хранилище, симлинк, `.gitignore` (§2.1) — раньше всего, две строки |
-| 1 | `.agents/state/` + структура `tasks/`, lifecycle contract, разрешение активной задачи |
-| 2 | Skill `checkpoint` (§3.3); проверить оба направления переключения без генератора |
-| 3 | `AGENTS.md` + `CLAUDE.md`; сверить одинаковое понимание правил обоими харнессами |
-| 4 | Поставляемые portable skills: `checkpoint`, `migrate-memory`; чужие скиллы проекта сохраняются |
-| 5 | Три canonical agents; **параллельно выписать native-определения обоих харнессов руками** |
+| 0 | `.agents/memory/`: store, symlink, `.gitignore` (§2.1) — first of all, two lines |
+| 1 | `.agents/state/` + `tasks/` layout, lifecycle contract, active task resolution |
+| 2 | `checkpoint` skill (§3.3); verify switching in both directions without a generator |
+| 3 | `AGENTS.md` + `CLAUDE.md`; verify that both harnesses interpret the rules identically |
+| 4 | Shipped portable skills: `checkpoint`, `migrate-memory`; unrelated project skills are preserved |
+| 5 | Three canonical agents; **write native definitions for both harnesses manually in parallel** |
 | 6 | `gen_agents.py` + adapters + `--check` + orphan cleanup + schema validation |
-| 7 | Проверка startup/resume по AGENTS.md в обоих харнессах; хуки вне обязательного v1 |
-| 8 | Complexity gate и ограниченный fix loop |
-| 9 | Evals, drift-тесты, опциональная телеметрия |
+| 7 | Verify startup/resume according to AGENTS.md in both harnesses; hooks are not mandatory in v1 |
+| 8 | Complexity gate and a bounded fix loop |
+| 9 | Evals, drift tests, optional telemetry |
 
-Цель этапа 5 — **понять реальную поверхность различий до написания слоя абстракции**.
+Stage 5 aims to **understand the actual differences before writing an abstraction layer**.
 
-Этапы 1–4 не требуют Python вообще: это markdown-файлы и правило в `AGENTS.md`.
-Генератор появляется на этапе 6, уже под понятную задачу.
-
----
-
-## 20. Критерии готовности v1
-
-```text
- 1. Создать задачу в Claude, записать в canonical task state.
- 2. Выполнить часть реализации; проверить отсутствие автоматических checkpoint.
- 3. Явно вызвать $checkpoint и проверить запись журнала.
- 4. Открыть тот же repo/branch в Codex.
- 5. Codex определяет свой session id и задачу (привязка или явный bind).
- 6. Codex понимает текущее состояние без ручного пересказа.
- 7. Codex вызывает эквивалентного canonical subagent.
- 8. Codex продолжает работу.
- 9. Переключиться обратно без $checkpoint; Claude сверяет сохранённое состояние с Git.
-10. Generated definitions синхронны через --check.
-```
-
-Отдельная проверка durability:
-
-```text
-11. Прервать сессию БЕЗ вызова $checkpoint.
-12. Следующая сессия восстанавливает состояние из журнала задачи
-    с учётом границ потерь из §3.2.
-    Проверить обрыв при работе main без сабагентов и при параллельных делегациях;
-    не представлять непроверенные изменения как завершённые.
-```
-
-И проверка параллельности:
-
-```text
-13. Второй worktree на другой ветке, другой харнесс, другая задача.
-14. Обе сессии работают, не мешая друг другу и не путая привязки.
-15. Два чата на ОДНОЙ задаче в одном дереве пишут checkpoint одновременно:
-    получаются два разных полных файла, ни одна запись не потеряна.
-    Повторить для общего префикса session id, одной сессии и одного timestamp;
-    проверить повтор при занятом имени, включая коллизию хеша.
-16. Канонический читатель показывает legacy journal.md, старые и новые записи
-    в проверенном порядке; неоднозначные старые имена разбирает по metadata session,
-    повреждённую запись отвергает, ни один старый файл не конвертирует.
-17. Одновременные bind/unbind одного session id сериализуются; --force не обходит
-    flock. Сбой процесса освобождает OS-блокировку, разные сессии независимы.
-18. Одновременный task new с одним slug создаёт только одну задачу. Незавершённый
-    каталог без task.md после сбоя обнаруживается, автоматически не удаляется.
-19. Session id не обрезается; . и .. недопустимы. Checkpoint с явным slug требует
-    существующую active/paused задачу; --stage не принимает пробелы, # и новые строки.
-20. Legacy ACTIVE снимается только после соответствующего bind без LOCK;
-    при LOCK оба сохраняются с предупреждением о проверке старой сессии
-    перед ручным удалением LOCK и повторным bind.
-```
-
-Пункты 11–12 важнее остальных: без них система работает только при аккуратном завершении,
-то есть не решает исходную задачу.
-
-При этом не требуется: Claude-specific или Codex-specific task state, дублирования canonical
-prompts, кросс-харнессной subprocess-оркестрации.
+Stages 1–4 require no Python at all: they are Markdown files and a rule in `AGENTS.md`.
+The generator arrives at stage 6, once its purpose is clear.
 
 ---
 
-## 21. Родословная источников
+## 20. v1 readiness criteria
 
-| Слой | Источник | Что берём |
+```text
+ 1. Create a task in Claude and record it in canonical task state.
+ 2. Complete part of the implementation; verify that no automatic checkpoints occur.
+ 3. Explicitly invoke $checkpoint and verify the journal entry.
+ 4. Open the same repo/branch in Codex.
+ 5. Codex determines its session ID and task (binding or explicit bind).
+ 6. Codex understands the current state without a manual recap.
+ 7. Codex invokes an equivalent canonical subagent.
+ 8. Codex continues the work.
+ 9. Switch back without $checkpoint; Claude checks saved state against Git.
+10. Generated definitions are in sync according to --check.
+```
+
+A separate durability check:
+
+```text
+11. Interrupt the session WITHOUT invoking $checkpoint.
+12. The next session recovers state from the task journal,
+    subject to the loss boundaries in §3.2.
+    Test interruption while main is working without subagents and during parallel delegations;
+    do not present unverified changes as completed work.
+```
+
+And a concurrency check:
+
+```text
+13. A second worktree on another branch, another harness, another task.
+14. Both sessions work without interfering with each other or confusing bindings.
+15. Two chats on ONE task in one worktree write checkpoints simultaneously:
+    two distinct complete files are produced, with no lost entries.
+    Repeat for a shared session ID prefix, the same session, and the same timestamp;
+    verify retry when a name is taken, including a hash collision.
+16. The canonical reader displays legacy journal.md, old and new entries in validated order;
+    it resolves ambiguous old names using session metadata, rejects corrupted entries,
+    and does not convert any old files.
+17. Concurrent bind/unbind for the same session ID are serialized; --force does not bypass
+    flock. A process crash releases the OS lock; different sessions remain independent.
+18. Concurrent task new with the same slug creates only one task. An incomplete directory
+    without task.md after a crash is detected and is not automatically deleted.
+19. Session IDs are not trimmed; . and .. are invalid. A checkpoint with an explicit slug
+    requires an existing active/paused task; --stage rejects spaces, #, and newlines.
+20. Legacy ACTIVE is removed only after the corresponding bind without LOCK;
+    if LOCK exists, both are retained with a warning to check the old session
+    before manually removing LOCK and repeating bind.
+```
+
+Items 11–12 matter more than the others: without them, the system works only after a clean
+session ending and therefore fails to solve the original problem.
+
+None of this requires Claude-specific or Codex-specific task state, duplicate canonical
+prompts, or cross-harness subprocess orchestration.
+
+---
+
+## 21. Source lineage
+
+| Layer | Source | What we take |
 |---|---|---|
-| canonical/generated lifecycle, drift check | `Lukk17/agent-standards` | структура source-of-truth → generated targets |
-| portable authoring, adapter ideas | `wshobson/agents` | intent вместо tool API, принципы маппинга |
-| формат скиллов | `agentskills/agentskills` | Agent Skills spec |
-| семантика workflow | `obra/superpowers` | understand/implement/review/fix, без bloat |
-| отложено | `Claudex5` | model escalation, cross-model review — не в v1 |
+| canonical/generated lifecycle, drift check | `Lukk17/agent-standards` | source-of-truth → generated targets structure |
+| portable authoring, adapter ideas | `wshobson/agents` | intent instead of tool APIs, mapping principles |
+| skill format | `agentskills/agentskills` | Agent Skills spec |
+| workflow semantics | `obra/superpowers` | understand/implement/review/fix, without bloat |
+| deferred | `Claudex5` | model escalation, cross-model review — not in v1 |
 
-Marketplace-структуры целиком не копируются: берутся паттерны, чеклисты, идеи адаптеров
-и семантика workflow, а не десятки узкоспециализированных ролей.
-При заимствовании кода или существенных частей промптов проверяются лицензии
-и сохраняются необходимые notices.
+Marketplace structures are not copied wholesale: we take patterns, checklists, adapter ideas,
+and workflow semantics, not dozens of narrowly specialized roles. When borrowing code or
+substantial prompt sections, check licenses and retain the required notices.
 
 ---
 
-## 22. Журнал решений
+## 22. Decision log
 
-Чтобы не переоткрывать закрытое.
+To avoid reopening settled decisions.
 
-| Решение | Статус | Причина |
+| Decision | Status | Reason |
 |---|---|---|
-| Кросс-харнессная оркестрация | отвергнута | свой runtime, permissions и lifecycle у каждого; убирает exec-recipe, враппер и sandbox-оркестрацию |
-| Handoff только в конце сессии | отвергнут | SPOF: при исчерпании лимита хода на сериализацию уже нет |
-| Писать `handoff.md` на `SubagentStop` | отвергнуто | сабагент не знает состояния оркестрации; при параллельном запуске — гонка за файл; неверный ownership |
-| Чекпойнт делает оркестратор после оценки результата | принято | разделяет принятые факты и явно отклонённые подходы |
-| Чекпойнт только по явной ручной команде | принято | события сессии не требуют записи; автоматических триггеров нет |
-| Отметка checkpoint и частичное чтение журнала | отвергнуто | журнал выбранной задачи читается целиком; формат имён и метаданные проверяет канонический читатель |
-| Монотонный timestamp-based ID | отвергнуто | timestamp даёт порядок показа, но не причинные часы: перевод часов и разные машины исключают такую гарантию |
-| Отдельный снимок `handoff.md` | отвергнут | журнал читается целиком — проекция не нужна; вместе с ней ушли правило приоритета, вопрос свежести снимка и шаг в процедуре |
-| Полный пересказ статуса в каждой записи | отвергнуто | трение записи и журнал, который перестают перечитывать; но намерения и решения пишутся наравне с результатами |
-| Память в git проекта | отвергнуто | память проектная, а не веточная: на feature-ветке знание становится невидимым другим веткам до мержа |
-| Репо памяти на каждый проект | принято | корень хранилища — обычная папка; каждый проект имеет собственную историю и приватный remote |
-| Схема разрешения ключа проекта | отвергнута | связывает симлинк; коллизию имён разрулить руками, если случится |
-| Версионирование установленной `.agents/` | принято для целевого проекта | определения и журналы версионируются; память, привязки, телеметрия и legacy ACTIVE/LOCK gitignored. В клоне CLI вся локальная `.agents/` исключена отдельно |
-| Ротация журнала по хвосту | отвергнута | обрезка смещена против ранних решений-ограничений; новый журнал обязан начинаться со сводки |
-| Общая блокировка задач | не вводится | журнал публикует отдельные файлы эксклюзивно; bind/unbind одного session id защищает короткий OS flock, без force-обхода |
-| Отдельный recovery-лог + хуки | отвергнуто | v1 опирается на ручной checkpoint; транскрипт — необязательная форензика, не гарантия сохранности |
-| Персистить состояние сабагентов | не требуется | внутри сессии они общаются с оркестратором нативно; файлы нужны только межсессионно |
-| Коммитить привязку чата | отвергнуто | это workspace state; конфликты при merge, дублирование идентичности |
-| Ветка вместо привязки | отвергнуто | detached HEAD, несколько задач на ветке, worktrees, переименования; ветка — только advisory hint |
-| Молча грузить задачу по расхождению | отвергнуто | загрузить чужую задачу хуже, чем не выбрать никакую |
-| Один указатель на рабочее дерево (`ACTIVE`) | отвергнуто | задачу выбирает чат: в одном дереве законно открыто несколько чатов на разных задачах |
-| Общая нумерация записей журнала | отвергнуто | вместо общего счётчика имя содержит timestamp, hash32 полного session id и ordinal с 000001; эксклюзивная публикация с повтором защищает от коллизий |
-| Санитизация session id | отвергнуто | приведённый к «безопасному» виду чужой id молча склеивает два разных чата; невалидное значение отвергается |
-| Отдельный обратный индекс «чаты задачи X» | отвергнуто | это перечисление каталога `sessions/`; вторая структура рассинхронизируется |
-| `write_access` рядом с `filesystem-write` | отвергнуто | два поля на одно право |
-| `model_tier` + таблица маппинга | отвергнуто | при трёх агентах словарь дороже трёх правок; имена моделей пишутся явно |
-| `policy.yml` / модель оркестратора в каноне | отвергнуто | это конфигурация сессии, меняется на ходу; задаётся руками в харнессе |
-| Один харнесс на дерево как ограничение | переформулировано | это механизм параллельности: разные фичи — разные worktrees |
-| Поле `skills:` в агенте | отложено | пять разных семантик склеены; вводить как `required_skills:` после проверки |
-| Отдельный `tester` | отложено | для v1 достаточно implementer + reviewer; независимые тесты выводятся из требований |
-| Отдельный `architect` | отложено | до появления реального класса задач планирует main |
-| Число файлов как критерий gate | понижено до слабого сигнала | 20 переименований тривиальны, строка в auth — нет |
-| Эскалация к пользователю по числовому лимиту | отвергнута | диагностировать причину несходимости и маршрутизировать по ней |
-| `runs.jsonl` как portable state | отвергнуто | локальная observability; в integration surface не входит |
-| Симлинк скиллов | оставлен | возражения касались Windows/CI/Docker, их сейчас нет |
-| Хранить task state в `main` после merge | принято | task.md и журнал сохраняются для возврата; завершённые журналы читаются по необходимости |
+| Cross-harness orchestration | rejected | each has its own runtime, permissions, and lifecycle; removes exec-recipe, the wrapper, and sandbox orchestration |
+| Handoff only at session end | rejected | SPOF: when a usage limit is reached, there is no turn left for serialization |
+| Write `handoff.md` on `SubagentStop` | rejected | a subagent does not know orchestration state; parallel execution causes a race for the file; incorrect ownership |
+| The orchestrator writes checkpoints after evaluating results | accepted | distinguishes accepted facts from explicitly rejected approaches |
+| Checkpoint only on an explicit manual command | accepted | session events do not require a write; there are no automatic triggers |
+| Checkpoint marker and partial journal reading | rejected | the selected task's journal is read in full; the canonical reader validates filename format and metadata |
+| Monotonic timestamp-based ID | rejected | timestamps provide display order, not causal clocks: clock changes and different machines rule out that guarantee |
+| Separate `handoff.md` snapshot | rejected | the journal is read in full, so no projection is needed; removes the precedence rule, snapshot freshness question, and a procedure step |
+| Full status recap in every entry | rejected | friction on every write and a journal that people stop rereading; intentions and decisions still belong alongside results |
+| Memory in the project's Git repository | rejected | memory is project-scoped, not branch-scoped: knowledge on a feature branch is invisible to other branches until merge |
+| A memory repository per project | accepted | the store root is an ordinary directory; each project has its own history and private remote |
+| Project key resolution scheme | rejected | the symlink establishes the association; resolve name collisions manually if they occur |
+| Versioning installed `.agents/` | accepted for the target project | definitions and journals are versioned; memory, bindings, telemetry, and legacy ACTIVE/LOCK are gitignored. The CLI clone separately excludes its entire local `.agents/` |
+| Journal rotation that keeps only the tail | rejected | truncation is biased against early decisions that impose constraints; a new journal must start with a summary |
+| Shared task lock | not introduced | the journal publishes separate files exclusively; a short OS flock protects bind/unbind for one session ID, with no force bypass |
+| Separate recovery log + hooks | rejected | v1 relies on manual checkpoints; a transcript is optional forensic evidence, not a durability guarantee |
+| Persist subagent state | not required | within a session, subagents communicate natively with the orchestrator; files are needed only between sessions |
+| Commit the chat binding | rejected | this is workspace state; causes merge conflicts and duplicates identity |
+| Branch instead of a binding | rejected | detached HEAD, multiple tasks per branch, worktrees, renames; the branch is only an advisory hint |
+| Silently load a task despite a mismatch | rejected | loading the wrong task is worse than selecting none |
+| One pointer per worktree (`ACTIVE`) | rejected | the chat selects the task: multiple chats on different tasks may legitimately be open in one worktree |
+| Shared journal entry numbering | rejected | instead of a shared counter, the name contains a timestamp, hash32 of the full session ID, and an ordinal starting at 000001; exclusive publication with retry protects against collisions |
+| Sanitize session IDs | rejected | converting an ID to a “safe” form silently merges two distinct chats; invalid values are rejected |
+| Separate reverse index of “chats for task X” | rejected | this is a listing of `sessions/`; a second structure would drift out of sync |
+| `write_access` alongside `filesystem-write` | rejected | two fields for one permission |
+| `model_tier` + mapping table | rejected | with three agents, a dictionary costs more than three edits; model names are explicit |
+| `policy.yml` / orchestrator model in canonical definitions | rejected | this is session configuration that changes during work; set it manually in the harness |
+| One harness per worktree as a restriction | reframed | this is a concurrency mechanism: different features use different worktrees |
+| Agent `skills:` field | deferred | combines five different semantics; introduce as `required_skills:` after verification |
+| Separate `tester` | deferred | implementer + reviewer are sufficient for v1; independent tests are derived from requirements |
+| Separate `architect` | deferred | main handles planning until a real class of tasks requires the role |
+| File count as a gate criterion | downgraded to a weak signal | 20 renames are trivial; one line in auth is not |
+| Escalate to the user at a numeric limit | rejected | diagnose why the process is not converging and route accordingly |
+| `runs.jsonl` as portable state | rejected | local observability; not part of the integration surface |
+| Skills symlink | retained | objections concerned Windows/CI/Docker, none of which are currently in use |
+| Retain task state in `main` after merge | accepted | task.md and the journal are kept for returning to the task; completed journals are read as needed |

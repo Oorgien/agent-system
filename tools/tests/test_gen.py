@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Тесты генератора и парсера. Стандартная библиотека, без зависимостей.
+"""Generator and parser tests. Standard library only, no dependencies.
 
     python3 -m unittest discover tools/tests -v
 """
@@ -48,7 +48,7 @@ class TestFrontmatter(unittest.TestCase):
         self.assertEqual(d["caps"], ["a", "b"])
 
     def test_empty_inline_map_is_a_map(self):
-        """Регрессия: '{}' во вложенной карте разбиралось в строку."""
+        """Regression: '{}' in a nested mapping was parsed as a string."""
         d = frontmatter.parse("overrides:\n  claude: {}\n  codex: {}\n")
         self.assertEqual(d["overrides"], {"claude": {}, "codex": {}})
 
@@ -77,10 +77,10 @@ class TestClaudeAdapter(unittest.TestCase):
             self.assertNotIn(forbidden, line)
 
     def test_shell_without_write_is_inexpressible(self):
-        """Главный инвариант: молчаливого расширения прав быть не должно."""
+        """Core invariant: access must never be silently widened."""
         with self.assertRaises(Inexpressible) as cm:
             claude_adapter.render(agent(capabilities=["filesystem-read", "shell"]))
-        self.assertIn("невыразим", str(cm.exception))
+        self.assertIn("cannot express", str(cm.exception))
 
     def test_vcs_without_write_is_also_inexpressible(self):
         with self.assertRaises(Inexpressible):
@@ -92,32 +92,33 @@ class TestClaudeAdapter(unittest.TestCase):
         self.assertIn("Bash", text)
 
     def test_effort_is_carried_into_frontmatter(self):
-        """Регрессия: адаптер утверждал, что носителя нет, и выбрасывал значение.
+        """Regression: the adapter claimed no native field existed and dropped the value.
 
-        Носитель есть — поле `effort` во frontmatter сабагента. Пока значение
-        выбрасывалось, канон обещал усилие, а сессия наследовала своё.
+        The native field is `effort` in subagent frontmatter. While the value was
+        discarded, canonical definitions promised effort but sessions inherited
+        their own setting.
         """
         text, warns = claude_adapter.render(agent(effort="low"))
         self.assertIn("\neffort: low\n", text)
         self.assertEqual(warns, [])
 
     def test_effort_unsupported_by_model_is_render_error(self):
-        """Харнесс понизил бы уровень молча — ловим до записи файла."""
+        """Catch silent effort downgrades before writing the file."""
         claude_adapter.MODEL_EFFORT["probe-model"] = {"low", "medium"}
         try:
             with self.assertRaises(RenderError) as cm:
                 claude_adapter.render(
                     agent(effort="high", models={"claude": "probe-model", "codex": "x"}))
-            self.assertIn("не поддерживает", str(cm.exception))
+            self.assertIn("does not support", str(cm.exception))
         finally:
             del claude_adapter.MODEL_EFFORT["probe-model"]
 
     def test_unknown_model_warns_but_carries_effort(self):
-        """Модель вне таблицы — неизвестность, а не несовместимость."""
+        """An unlisted model is unknown, not incompatible."""
         text, warns = claude_adapter.render(
             agent(effort="high", models={"claude": "some-future-model", "codex": "x"}))
         self.assertIn("\neffort: high\n", text)
-        self.assertTrue(any("не описана" in w for w in warns))
+        self.assertTrue(any("is not listed" in w for w in warns))
 
 
 class TestCodexAdapter(unittest.TestCase):
@@ -133,7 +134,7 @@ class TestCodexAdapter(unittest.TestCase):
         self.assertEqual(tomllib.loads(rw)["sandbox_mode"], "workspace-write")
 
     def test_shell_without_write_stays_read_only(self):
-        """Расхождение с Claude: песочница ограничивает процесс, поэтому это выразимо."""
+        """Unlike Claude, the sandbox restricts the process, so this can be expressed."""
         text, _ = codex_adapter.render(agent(capabilities=["filesystem-read", "shell"]))
         self.assertEqual(tomllib.loads(text)["sandbox_mode"], "read-only")
 
@@ -142,20 +143,20 @@ class TestCodexAdapter(unittest.TestCase):
         self.assertEqual(tomllib.loads(text)["model_reasoning_effort"], "medium")
 
     def test_developer_instructions_is_the_schema_field(self):
-        """Регрессия: писалось `instructions`, а обязательный ключ — другой.
+        """Regression: output used `instructions`, but a different key is required.
 
-        tomllib.loads() этого не ловил: он проверяет синтаксис TOML, а не схему
-        агента, поэтому неправильное имя поля жило незамеченным.
+        tomllib.loads() did not catch this: it validates TOML syntax, not the
+        agent schema, so the incorrect field name went unnoticed.
         """
         data = tomllib.loads(codex_adapter.render(agent())[0])
         self.assertIn("developer_instructions", data)
         self.assertNotIn("instructions", data)
 
     def test_prompt_survives_serialization(self):
-        """Экранирование — ответственность адаптера, а не автора промпта.
+        """Escaping is the adapter's responsibility, not the prompt author's.
 
-        Без него `\\bword\\b` после разбора превращался в управляющие символы,
-        а `C:\\temp` — в табуляцию: текст менялся молча.
+        Without it, parsing turned `\\bword\\b` into control characters and
+        `C:\\temp` into a tab, silently changing the text.
         """
         body = (
             'Use \\bword\\b to match. Path C:\\temp\\new stays literal. '
@@ -198,7 +199,7 @@ class TestSchema(unittest.TestCase):
     def test_rejects_unimplemented_override(self):
         with self.assertRaises(gen_agents.SchemaError) as cm:
             gen_agents.validate(agent(overrides={"claude": "x"}), Path("probe.md"))
-        self.assertIn("не реализована", str(cm.exception))
+        self.assertIn("not implemented", str(cm.exception))
 
 
 class TestGeneratorEndToEnd(unittest.TestCase):
@@ -222,14 +223,14 @@ class TestGeneratorEndToEnd(unittest.TestCase):
             canon.write_text(backup.replace("effort: high", "effort: low"), encoding="utf-8")
             r = self.run_gen("--check")
             self.assertEqual(r.returncode, 1)
-            self.assertIn("РАСХОЖДЕНИЕ", r.stderr)
+            self.assertIn("DRIFT", r.stderr)
         finally:
             canon.write_text(backup, encoding="utf-8")
 
     def test_orphan_cleanup_spares_unmarked_files(self):
-        """Файл без нашего маркера мы не создавали и удалять не имеем права."""
+        """A file without our marker was not created by us and must not be deleted."""
         foreign = ROOT / ".claude" / "agents" / "handwritten.md"
-        foreign.write_text("---\nname: handwritten\n---\n\nНе генератором создан.\n",
+        foreign.write_text("---\nname: handwritten\n---\n\nNot created by the generator.\n",
                            encoding="utf-8")
         try:
             files, _ = gen_agents.build()

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Этап 0: хранилище памяти + симлинки. Идемпотентно, безопасно перезапускать.
-# Запускать в КАЖДОМ worktree и на КАЖДОЙ машине: симлинки gitignored и между
-# рабочими деревьями не разделяются.
+# Stage 0: memory storage and symlinks. Idempotent and safe to rerun.
+# Run in EVERY worktree and on EVERY machine: symlinks are gitignored and are
+# not shared between worktrees.
 #
-#   ./setup.sh              сохранённый ключ и хранилище; при первом запуске — автоматически
-#   ./setup.sh <project>    ключ задан явно (см. ниже, когда это нужно)
+#   ./setup.sh              saved key and store; selected automatically on first run
+#   ./setup.sh <project>    explicit key (see below for when this is needed)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,15 +23,15 @@ done
 
 say() { printf '  %s\n' "$*"; }
 
-# --- ключ проекта ----------------------------------------------------------
-# Ключ ОБЯЗАН совпадать во всех worktrees одного репозитория. Иначе repo/ и
-# repo-billing/ линкуются в разные каталоги хранилища, и память, добытая в одном
-# дереве, во втором просто не существует — при том что AGENTS.md §1 обещает
-# обратное. Молчаливое расхождение: симлинки на месте, ошибки нет.
+# --- project key -----------------------------------------------------------
+# The key MUST match across all worktrees of a repository. Otherwise repo/ and
+# repo-billing/ point to different storage directories, and memory collected in
+# one tree is absent from the other, contrary to the contract in AGENTS.md §1.
+# This divergence is silent: both symlinks exist and no error is reported.
 #
-# Имя текущего каталога для этого не годится: у worktree оно другое по построению.
-# Берём имя каталога ОСНОВНОГО рабочего дерева. git-common-dir у всех worktrees
-# один и тот же и указывает в .git основного репозитория, поэтому ключ стабилен.
+# The current directory name is unsuitable: worktrees have different names.
+# Use the MAIN worktree's directory name. All worktrees share git-common-dir,
+# which points to the main repository's .git directory, keeping the key stable.
 project_key() {
   local common
   common="$(git -C "$ROOT" rev-parse --git-common-dir 2>/dev/null)" || return 1
@@ -48,31 +48,31 @@ fi
 FALLBACK=""
 if [ $# -gt 0 ] && [ -n "$1" ]; then
   PROJECT="$1"
-  ORIGIN="аргумент командной строки"
+  ORIGIN="command-line argument"
 elif PROJECT="$(git -C "$ROOT" config --local --get agents.memoryKey 2>/dev/null)" && [ -n "$PROJECT" ]; then
-  ORIGIN="общий git config: agents.memoryKey"
+  ORIGIN="shared git config: agents.memoryKey"
 elif [ -n "$OLD_TARGET" ]; then
   PROJECT="$(basename "$OLD_TARGET")"
-  ORIGIN="существующая ссылка памяти"
+  ORIGIN="existing memory symlink"
 elif PROJECT="$(project_key)" && [ -n "$PROJECT" ] && [ "$PROJECT" != "/" ]; then
-  ORIGIN="имя каталога основного рабочего дерева git"
+  ORIGIN="main Git worktree directory name"
 else
   PROJECT="$(basename "$ROOT")-memory"
-  ORIGIN="имя текущего каталога"
+  ORIGIN="current directory name"
   FALLBACK=1
 fi
 
-# Ключ — имя одного подкаталога, не путь вне хранилища.
+# The key is a single subdirectory name, not a path outside the store.
 case "$PROJECT" in
   ""|.|..|*/*|*\\*|*$'\n'*|*$'\r'*)
-    echo "ОШИБКА: ключ проекта должен быть непустым именем каталога, не путём" >&2
+    echo "ERROR: project key must be a nonempty directory name, not a path" >&2
     exit 1 ;;
 esac
 
-# --- хранилище -------------------------------------------------------------
-# Приоритет тот же, что у ключа: явное значение -> сохранённое -> стандартное.
-# Читать сохранённое обязательно: иначе повторный запуск без переменной вернул бы
-# память в стандартный каталог — тот же тихий переезд, что и при смене ключа.
+# --- memory store ----------------------------------------------------------
+# Same precedence as the key: explicit value -> saved value -> default.
+# Always read the saved value: rerunning without the variable would otherwise
+# redirect memory to the default directory, as silently as changing the key.
 IN_GIT=""
 git -C "$ROOT" rev-parse --git-common-dir >/dev/null 2>&1 && IN_GIT=1
 
@@ -83,61 +83,61 @@ fi
 
 if [ -n "${AGENTS_MEMORY_STORE:-}" ]; then
   STORE="$AGENTS_MEMORY_STORE"
-  STORE_ORIGIN="переменная AGENTS_MEMORY_STORE"
+  STORE_ORIGIN="AGENTS_MEMORY_STORE environment variable"
 elif [ -n "$SAVED_STORE" ]; then
   STORE="$SAVED_STORE"
-  STORE_ORIGIN="общий git config: agents.memoryStore"
+  STORE_ORIGIN="shared git config: agents.memoryStore"
 elif [ -n "$OLD_TARGET" ]; then
   STORE="$(dirname "$OLD_TARGET")"
-  STORE_ORIGIN="существующая ссылка памяти"
+  STORE_ORIGIN="existing memory symlink"
 else
   STORE="$HOME/.agents-memory"
-  STORE_ORIGIN="стандартный каталог"
+  STORE_ORIGIN="default directory"
 fi
 
-# Проверить схему до mkdir, git config и изменения ссылок.
-# Старую общую историю не удаляем и не прячем вложенным git init.
+# Validate the layout before mkdir, git config, or symlink changes.
+# Do not delete the old shared history or hide it behind a nested git init.
 if [ -e "$STORE/.git" ] || [ -L "$STORE/.git" ] || { [ -f "$STORE/HEAD" ] && [ -d "$STORE/objects" ]; }; then
-  echo "ОШИБКА: старое общее Git-хранилище: $STORE. Нужен отдельный репозиторий на проект; сохраните историю и перенесите память явно." >&2
+  echo "ERROR: legacy shared Git store: $STORE. A separate repository per project is required; preserve the history and migrate memory explicitly." >&2
   exit 1
 fi
 TARGET="$STORE/$PROJECT"
 if [ -L "$TARGET" ] || { [ -e "$TARGET" ] && [ ! -d "$TARGET" ]; } || [ -L "$TARGET/.git" ] || { [ -e "$TARGET/.git" ] && [ ! -d "$TARGET/.git" ]; } || [ -L "$TARGET/.gitkeep" ] || { [ -e "$TARGET/.gitkeep" ] && [ ! -f "$TARGET/.gitkeep" ]; }; then
-  echo "ОШИБКА: небезопасный путь репозитория памяти: $TARGET" >&2
+  echo "ERROR: unsafe memory repository path: $TARGET" >&2
   exit 1
 fi
 if [ -d "$TARGET/.git" ]; then
   TOP="$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null)" || exit 1
   [ "$(cd "$TOP" && pwd -P)" = "$(cd "$TARGET" && pwd -P)" ] || exit 1
 elif [ -f "$TARGET/HEAD" ] && [ -d "$TARGET/objects" ]; then
-  echo "ОШИБКА: память должна быть рабочим деревом, не bare-репозиторием: $TARGET" >&2
+  echo "ERROR: memory must be a worktree, not a bare repository: $TARGET" >&2
   exit 1
 fi
 mkdir -p "$STORE"
-# Сохраняем физический абсолютный путь, независимый от cwd следующей сессии.
+# Save the physical absolute path, independent of the next session's cwd.
 STORE="$(cd "$STORE" && pwd -P)"
 TARGET="$STORE/$PROJECT"
 
-# --local читает и пишет общий repository config, не global/config.worktree.
-# Ошибка сохранения должна остановить setup до изменения симлинков.
+# --local reads and writes shared repository config, not global/config.worktree.
+# A failure to save must stop setup before any symlink changes.
 if [ -n "$IN_GIT" ]; then
   git -C "$ROOT" config --local --replace-all agents.memoryKey "$PROJECT"
   git -C "$ROOT" config --local --replace-all agents.memoryStore "$STORE"
 fi
 
 echo "agent-system setup"
-echo "  проект:    $PROJECT   ($ORIGIN)"
-echo "  хранилище: $STORE   ($STORE_ORIGIN)"
+echo "  project: $PROJECT   ($ORIGIN)"
+echo "  store:   $STORE   ($STORE_ORIGIN)"
 echo
 
 if [ -n "$FALLBACK" ]; then
-  say "ВНИМАНИЕ: не удалось определить основное рабочее дерево git."
-  say "Ключ взят из имени каталога, а у worktree оно другое — память окажется"
-  say "разной в разных деревьях. Задайте ключ явно: ./setup.sh <project>"
+  say "WARNING: could not determine the main Git worktree."
+  say "The key uses the directory name, which differs between worktrees; memory will"
+  say "differ between trees. Set the key explicitly: ./setup.sh <project>"
   echo
 fi
 
-# --- 1. отдельный Git-репозиторий памяти проекта ----------------------------
+# --- 1. separate Git repository for project memory -------------------------
 mkdir -p "$TARGET"
 if [ ! -d "$TARGET/.git" ]; then
   git -C "$TARGET" init -q
@@ -145,25 +145,25 @@ if [ ! -d "$TARGET/.git" ]; then
   if [ -z "$NO_COMMIT" ]; then
     git -C "$TARGET" add .gitkeep
     git -C "$TARGET" -c user.email=setup@local -c user.name=setup \
-        commit -qm "init project memory" || say "ВНИМАНИЕ: начальный коммит не создан; память подключена без коммита"
+        commit -qm "init project memory" || say "WARNING: initial commit was not created; memory is connected without a commit"
   fi
-  say "инициализирован git-репозиторий памяти в $TARGET"
-  say "remote не настроен — при необходимости подключите приватный remote этого проекта"
+  say "initialized memory Git repository at $TARGET"
+  say "no remote configured; add a private remote for this project if needed"
 fi
 
-# --- 2. симлинки -----------------------------------------------------------
-link() {  # link <путь> <цель>
+# --- 2. symlinks -----------------------------------------------------------
+link() {  # link <path> <target>
   local path="$1" target="$2"
   mkdir -p "$(dirname "$path")"
   if [ -L "$path" ]; then
-    if [ "$(readlink "$path")" = "$target" ]; then say "уже на месте: $path"; return; fi
+    if [ "$(readlink "$path")" = "$target" ]; then say "already in place: $path"; return; fi
     rm "$path"
   elif [ -e "$path" ]; then
-    echo "  ОШИБКА: $path существует и не является симлинком — разберитесь вручную" >&2
+    echo "  ERROR: $path exists and is not a symlink; resolve this manually" >&2
     return 1
   fi
   ln -s "$target" "$path"
-  say "создан симлинк: $path -> $target"
+  say "created symlink: $path -> $target"
 }
 
 [ -n "$STORAGE_ONLY" ] && exit 0
@@ -172,7 +172,7 @@ link "$ROOT/.agents/memory" "$STORE/$PROJECT"
 link "$ROOT/.claude/skills" "../.agents/skills"
 
 echo
-echo "Готово."
+echo "Done."
 echo
-echo "Проверка:"
+echo "Verify:"
 echo "  ls -l .agents/memory .claude/skills"

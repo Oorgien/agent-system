@@ -1,20 +1,20 @@
-# Телеметрия
+# Telemetry
 
-`.agents/runs.jsonl` — **локальная наблюдаемость, не переносимое состояние.** Gitignored,
-в integration surface не входит, каноническим состоянием не является никогда.
+`.agents/runs.jsonl` provides **local observability, not portable state.** It is gitignored,
+outside the integration surface, and never canonical state.
 
-Назначение — ответить на вопросы, на которые дизайн отвечает предположениями:
+Its purpose is to answer questions that the design currently answers with assumptions:
 
-- срабатывает ли complexity gate там, где нужно, и не делегирует ли лишнего;
-- находит ли reviewer что-нибудь на самом деле, и исправляется ли найденное;
-- расходится ли поведение Claude и Codex на одинаковых ролях.
+- whether the complexity gate triggers where needed and avoids unnecessary delegation;
+- whether the reviewer actually finds anything and whether those findings are addressed;
+- whether Claude and Codex behave differently in the same roles.
 
-Без этих данных §13 и §14 дизайна остаются гипотезами. Именно поэтому этап 8
-(проверка полезности gate) не может быть «реализован» кодом — он требует прогонов.
+Without these data, design §13 and §14 remain hypotheses. That is why stage 8
+(validating the gate's usefulness) cannot be "implemented" in code — it requires actual runs.
 
-## Формат
+## Format
 
-Одна JSON-строка на завершённую задачу или существенный этап:
+One JSON line per completed task or significant stage:
 
 ```json
 {
@@ -29,23 +29,23 @@
 }
 ```
 
-| Поле | Смысл |
+| Field | Meaning |
 |---|---|
-| `gate` | `TRIVIAL` / `NORMAL` / `COMPLEX` — выбранная ветка |
-| `agents` | кто реально вызывался, в порядке вызова |
-| `findings` | сколько замечаний вернул reviewer |
-| `fix_rounds` | сколько корректирующих раундов понадобилось |
+| `gate` | `TRIVIAL` / `NORMAL` / `COMPLEX` — the selected path |
+| `agents` | Agents actually invoked, in invocation order |
+| `findings` | Number of findings returned by the reviewer |
+| `fix_rounds` | Number of corrective rounds required |
 | `result` | `done` / `abandoned` / `escalated` |
 
-## Чего телеметрия не заменяет
+## What telemetry does not replace
 
-**Regression test.** Строки в логе описывают, что произошло, а не что должно происходить.
-Для переносимости нужны отдельные проверки: один канонический агент → артефакты обоих
-харнессов → валидация схемы → поведенческий smoke-тест там, где практично. Первые две
-ступени закрыты `tools/tests/`, третья требует запусков.
+**Regression tests.** Log entries describe what happened, not what should happen.
+Portability needs separate checks: one canonical agent → artifacts for both harnesses
+→ schema validation → a behavioral smoke test where practical. The first two steps
+are covered by `tools/tests/`; the third requires actual runs.
 
-## Ограничение
+## Limitation
 
-Файл gitignored и потому **пер-worktree**. Сравнение Claude и Codex работает в пределах
-одного рабочего окружения. Это осознанное ограничение v1: агрегация между машинами —
-отдельная функция, которой здесь нет.
+The file is gitignored and therefore **per-worktree**. Comparing Claude and Codex works
+within one working environment. This is a deliberate v1 limitation: aggregation across
+machines is a separate feature that is not provided here.

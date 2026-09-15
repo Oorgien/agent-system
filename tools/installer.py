@@ -142,17 +142,20 @@ def make_plan(root, source, command, memory_key=None, memory_from=None):
                         any(rel.startswith(n + '/') for n in old['links'])):
                 continue
             if path.is_symlink() or path.parent.is_symlink():
-                raise Conflict(f'Unmanaged link in native discovery directory: {rel}')
-            try:
-                text = path.read_text()
-                if path.suffix == '.toml':
-                    name = tomllib.loads(text).get('name')
-                else:
-                    fm = text.split('---', 2)
-                    match = re.search(r'^name:\s*([^\n]+)', fm[1], re.M) if len(fm) == 3 else None
-                    name = match.group(1).strip().strip("\"'") if match else None
-            except (ValueError, UnicodeError):
-                continue  # unrelated invalid definitions are not ours to repair
+                # Foreign links (skill managers install them) are never dereferenced:
+                # the discovery name is the link name itself.
+                name = path.parent.name if pattern.startswith('*/') else path.stem
+            else:
+                try:
+                    text = path.read_text()
+                    if path.suffix == '.toml':
+                        name = tomllib.loads(text).get('name')
+                    else:
+                        fm = text.split('---', 2)
+                        match = re.search(r'^name:\s*([^\n]+)', fm[1], re.M) if len(fm) == 3 else None
+                        name = match.group(1).strip().strip("\"'") if match else None
+                except (ValueError, UnicodeError):
+                    continue  # unrelated invalid definitions are not ours to repair
             if name in wanted:
                 raise Conflict(f'Existing runtime name {name!r}: {rel}')
 

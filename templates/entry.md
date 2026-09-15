@@ -4,21 +4,22 @@ at: <YYYY-MM-DDThh:mm:ssZ>
 stage: <stage-id>
 ---
 
-Одна запись журнала — один файл
-`journal/<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`. Имя и фронтматтер собирает
-`agent-system task checkpoint`: hash32 — первые 32 строчных hex-символа SHA-256
-полного session id, ordinal начинается с `000001`. Публикация атомарная и без
-перезаписи; при занятом имени CLI пробует следующий ordinal.
-`stage-id` соответствует полному шаблону `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
+One journal entry is one file:
+`journal/<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`. The filename and frontmatter are
+constructed by `agent-system task checkpoint`: hash32 is the first 32 lowercase
+hexadecimal characters of the full session ID's SHA-256 hash; ordinal starts at
+`000001`. Publication is atomic and does not overwrite existing files; if the name
+is taken, the CLI tries the next ordinal.
+`stage-id` fully matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`.
 
-Журнал читают целиком через `agent-system task journal [slug]`; повреждённую запись
-не пропускают. Записывается дельта, а не пересказ всего состояния. Критерий:
-всё существенное для продолжения, что нельзя восстановить из файлов репозитория.
+Read the entire journal through `agent-system task journal [slug]`; do not skip a
+corrupted entry. Record the delta, not a retelling of the entire state. The criterion:
+anything essential for continuing that cannot be recovered from repository files.
 
-<Что произошло и что это значит.>
+<What happened and what it means.>
 
-<Если применимо:>
-Решение: <принятое намерение, включая следующий шаг, если он не очевиден>
-Отвергнуто: <подход> — <причина>
-Проверки: <результат, включая «не запускались»>
-Рабочее дерево: <чисто | грязно: что и почему оставлено>
+<If applicable:>
+Decision: <agreed intent, including the next step if it is not obvious>
+Rejected: <approach> — <reason>
+Checks: <result, including "not run">
+Worktree: <clean | dirty: what was left and why>

@@ -1,8 +1,8 @@
-# Правила авторинга агентов и скиллов
+# Agent and skill authoring rules
 
-## Главное правило
+## Main rule
 
-> Канонический промпт описывает **намерение и процедуру**, а не API конкретного харнесса.
+> A canonical prompt describes **intent and procedure**, not a particular harness's API.
 
 ```text
 GOOD: Inspect the changed files.
@@ -12,20 +12,20 @@ GOOD: Delegate independent investigation when useful.
 BAD:  Call the Agent tool with subagent_type=explorer.
 ```
 
-Причина — переносимость: имена механизмов у харнессов разные, и промпт, зашивший их,
-перестаёт быть каноническим.
+The reason is portability: harnesses name their mechanisms differently, and a prompt
+that hardcodes those names is no longer canonical.
 
-## `description` против body
+## `description` versus body
 
 ```text
 description = WHAT + WHEN     routing metadata
-body        = HOW             процедура
+body        = HOW             procedure
 ```
 
-Указывать условия применимости в `description` **не запрещено, а требуется** — это его
-прямое назначение. Оба харнесса используют `description` для отбора.
+Stating applicability conditions in `description` is **required, not prohibited** —
+that is its purpose. Both harnesses use `description` for selection.
 
-Ограничение из главного правила касается только body.
+The main rule's restriction applies only to the body.
 
 ```yaml
 description: >
@@ -33,32 +33,30 @@ description: >
   Use after non-trivial implementation changes.
 ```
 
-## Скиллы: progressive disclosure
+## Skills: progressive disclosure
 
 ```text
-SKILL.md      основной проход, логика решений, навигация, инварианты
-references/   большие чеклисты, стандарты, глубокая документация
-scripts/      детерминированная автоматизация, валидация
-assets/       шаблоны, статические ресурсы
+SKILL.md      main workflow, decision logic, navigation, invariants
+references/   large checklists, standards, detailed documentation
+scripts/      deterministic automation, validation
+assets/       templates, static resources
 ```
 
-`SKILL.md` должен быть полезен сам по себе. Референсы читаются по необходимости,
-а не целиком: иначе progressive disclosure превращается в один большой файл, разрезанный
-на части.
+`SKILL.md` must be useful on its own. Read references as needed, rather than in full:
+otherwise, progressive disclosure becomes one large file split into pieces.
 
-## Язык
+## Language
 
-Канонические промпты и скиллы — **по-английски**. Это язык, на котором обе модели
-работают точнее, и он снимает вопрос о том, на каком языке отвечать.
+Canonical prompts and skills are written **in English**. Both models work more accurately
+in this language, and it removes ambiguity about the response language.
 
-Документация о системе (`docs/`, `README.md`) — по-русски, её читают люди.
-`AGENTS.md` — по-русски: его читают и люди, и модели, и он про правила проекта,
-а не про поведение роли.
+System documentation (`docs/`, `README.md`) and `AGENTS.md` are also written in English.
+The repository uses English throughout, including scripts, generated text, and comments.
 
-## Чего избегать
+## What to avoid
 
-- **Оборотов «когда тебя вызвали для X»** — файл должен читаться и как инструкция роли,
-  и при простом чтении подряд.
-- **Ссылок на конкретные модели** в теле промпта: они меняются, а промпт канонический.
-- **Дублирования между агентом и скиллом.** Если процедура нужна нескольким ролям —
-  это скилл, а не абзац в трёх промптах.
+- **Phrases such as "when you are invoked for X"** — the file must work both as role
+  instructions and when read as ordinary text.
+- **References to specific models** in the prompt body: models change, while the prompt is canonical.
+- **Duplication between an agent and a skill.** If several roles need a procedure,
+  make it a skill rather than a paragraph in three prompts.

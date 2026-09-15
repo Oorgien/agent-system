@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Тесты слоя хранения и разрешения состояния задач.
+"""Task-state storage and resolution tests.
 
     python3 -m unittest discover tools/tests -v
 
-Главное, что здесь проверяется, — отсутствие гонки: два «чата» пишут чекпойнты
-в одну задачу одновременно, имена не совпадают, порядок чтения стабилен.
+The main invariant is freedom from races: two "chats" write checkpoints to one
+task concurrently, filenames remain unique, and read order is stable.
 """
 import json
 import shutil
@@ -58,7 +58,7 @@ class TestSessionIdentity(Base):
         self.assertIsNone(ts.session_id({"CLAUDE_CODE_SESSION_ID": ""}))
 
     def test_invalid_identity_is_refused_not_sanitized(self):
-        """Подчищенный чужой id склеил бы два разных чата в одну привязку."""
+        """Cleaning up an ID could merge two distinct chats into one binding."""
         for bad in ("../escape", "a/b", "a b", "", "x" * 129, "sid\n",
                     ".", "..", ".locks", ".gitkeep", ".DS_Store", ".agents-" + "a" * 32):
             with self.assertRaises(ts.StateError):
@@ -67,7 +67,7 @@ class TestSessionIdentity(Base):
             ts.session_id({"CLAUDE_CODE_SESSION_ID": "../../etc/passwd"})
 
     def test_invalid_source_does_not_fall_through_to_the_next_one(self):
-        """Иначе сессия молча работала бы под идентичностью другого харнесса."""
+        """Otherwise the session would silently use another harness's identity."""
         with self.assertRaises(ts.StateError):
             ts.session_id({"AGENTS_SESSION_ID": "bad/id", "CLAUDE_CODE_SESSION_ID": "ok"})
 
@@ -144,26 +144,26 @@ class TestJournal(Base):
         self.assertIn("first", a.read_text(encoding="utf-8"))
 
     def test_ordinal_sorts_after_the_base_name(self):
-        """Голая лексикографика ставит '-2' перед '.md': '-' < '.' в ASCII."""
+        """Plain lexical sorting places '-2' before '.md': '-' < '.' in ASCII."""
         keys = [ts.entry_key("20260910T142233Z-0123456789abcdef0123456789abcdef-000001.md"),
                 ts.entry_key("20260910T142233Z-0123456789abcdef0123456789abcdef-000002.md")]
         self.assertEqual(keys, sorted(keys))
 
     def test_entry_has_frontmatter(self):
         self.task("task-a")
-        p = ts.write_entry(self.root, "task-a", "sid-1", "тело", stage="implementer",
+        p = ts.write_entry(self.root, "task-a", "sid-1", "body \u2713", stage="implementer",
                            moment=self.moment())
         text = p.read_text(encoding="utf-8")
         self.assertTrue(text.startswith("---\n"))
         self.assertIn("session: sid-1\n", text)
         self.assertIn("at: 2026-09-10T14:22:33Z\n", text)
         self.assertIn("stage: implementer\n", text)
-        self.assertTrue(text.endswith("тело\n"))
+        self.assertTrue(text.endswith("body \u2713\n"))
 
     def test_canonical_order_puts_legacy_journal_first(self):
         d = self.task("task-a")
         (d / "journal.md").write_text("# legacy\n", encoding="utf-8")
-        ts.write_entry(self.root, "task-a", "sid-1", "новое", moment=self.moment())
+        ts.write_entry(self.root, "task-a", "sid-1", "new", moment=self.moment())
         ordered, broken = ts.journal_entries(self.root, "task-a")
         self.assertEqual(broken, [])
         self.assertEqual([p.name for p in ordered],
@@ -171,7 +171,7 @@ class TestJournal(Base):
 
     def test_unparsable_entry_is_reported_not_dropped(self):
         self.task("task-a")
-        ts.write_entry(self.root, "task-a", "sid-1", "новое", moment=self.moment())
+        ts.write_entry(self.root, "task-a", "sid-1", "new", moment=self.moment())
         (ts.journal_dir(self.root, "task-a") / "notes.md").write_text("x", encoding="utf-8")
         ordered, broken = ts.journal_entries(self.root, "task-a")
         self.assertEqual(broken, ["notes.md"])
@@ -179,13 +179,13 @@ class TestJournal(Base):
 
     def test_existing_entries_are_never_rewritten(self):
         self.task("task-a")
-        first = ts.write_entry(self.root, "task-a", "sid-1", "первое", moment=self.moment())
-        ts.write_entry(self.root, "task-a", "sid-1", "второе", moment=self.moment(40))
-        self.assertEqual(first.read_text(encoding="utf-8").split("---\n")[2].strip(), "первое")
+        first = ts.write_entry(self.root, "task-a", "sid-1", "first", moment=self.moment())
+        ts.write_entry(self.root, "task-a", "sid-1", "second", moment=self.moment(40))
+        self.assertEqual(first.read_text(encoding="utf-8").split("---\n")[2].strip(), "first")
 
 
 class TestConcurrentSessions(Base):
-    """Два чата пишут в одну задачу одновременно — состояние обоих сохраняется."""
+    """Two chats write to one task concurrently; both retain their state."""
 
     def test_parallel_checkpoints_do_not_collide(self):
         self.task("task-a")
@@ -199,7 +199,7 @@ class TestConcurrentSessions(Base):
                 for n in range(5):
                     written.append(ts.write_entry(self.root, "task-a", sid,
                                                   f"{sid}/{n}", moment=moment))
-            except Exception as e:                        # noqa: BLE001 — репортим в тест
+            except Exception as e:                        # noqa: BLE001 — report to the test
                 errors.append(e)
 
         threads = [threading.Thread(target=worker, args=(sid,)) for sid in sessions]
@@ -214,7 +214,7 @@ class TestConcurrentSessions(Base):
         ordered, broken = ts.journal_entries(self.root, "task-a")
         self.assertEqual(broken, [])
         self.assertEqual(len(ordered), len(written))
-        # Порядок чтения детерминирован и не зависит от порядка записи.
+        # Read order is deterministic and independent of write order.
         self.assertEqual([p.name for p in ordered],
                          [p.name for p in ts.journal_entries(self.root, "task-a")[0]])
         bodies = {p.read_text(encoding="utf-8").rsplit("---\n", 1)[1].strip() for p in ordered}
@@ -254,7 +254,7 @@ class TestResolution(Base):
         self.assertEqual((r.kind, r.slug, r.problems), ("bound", "task-b", []))
 
     def test_branch_mismatch_is_not_a_binding_problem(self):
-        """Несколько задач в одном дереве — норма, ветка лишь подсказка."""
+        """Multiple tasks in one tree are normal; the branch is only a hint."""
         self.task("task-a", branch="other-branch")
         ts.bind(self.root, "sid-1", "task-a")
         self.assertEqual(ts.resolve(self.root, "sid-1").kind, "bound")
@@ -264,7 +264,7 @@ class TestResolution(Base):
         ts.bind(self.root, "sid-1", "task-a")
         r = ts.resolve(self.root, "sid-1")
         self.assertEqual(r.kind, "bound")
-        self.assertEqual(r.candidates, [])          # discovery предлагает только active
+        self.assertEqual(r.candidates, [])          # discovery only suggests active tasks
 
     def test_binding_to_a_finished_task_is_invalid(self):
         self.task("task-a")
@@ -274,7 +274,7 @@ class TestResolution(Base):
         r = ts.resolve(self.root, "sid-1")
         self.assertEqual(r.kind, "invalid")
         self.assertTrue(r.problems)
-        self.assertEqual(r.candidates, ["task-b"])   # уходим в discovery, но не молча
+        self.assertEqual(r.candidates, ["task-b"])   # fall back to discovery, but not silently
 
     def test_binding_to_a_missing_task_is_invalid(self):
         self.task("task-a")
@@ -309,7 +309,7 @@ class TestResolution(Base):
         self.task("task-a")
         (ts.state_dir(self.root) / "ACTIVE").write_text("task-a\n", encoding="utf-8")
         self.assertEqual(ts.resolve(self.root, "sid-1").legacy, "task-a")
-        # Указатель на ДРУГУЮ задачу — ещё не перенесённая подсказка чужого чата.
+        # A pointer to a DIFFERENT task is another chat's unmigrated hint.
         self.task("task-b")
         self.assertEqual(ts.drop_legacy(self.root, "task-b"), [])
         self.assertEqual(ts.resolve(self.root, "sid-1").legacy, "task-a")
@@ -339,12 +339,12 @@ class TestTaskFile(Base):
         d = self.task("task-a")
         (d / "task.md").write_text(
             "---\nid: task-a\nstatus: active        # active | paused | done | abandoned\n"
-            "branch: main\n---\n\n# Заголовок\n\nТекст.\n", encoding="utf-8")
+            "branch: main\n---\n\n# Title\n\nText.\n", encoding="utf-8")
         ts.set_status(self.root, "task-a", "done")
         meta, err = ts.task_meta(self.root, "task-a")
         self.assertIsNone(err)
         self.assertEqual(meta["status"], "done")
-        self.assertIn("# Заголовок", (d / "task.md").read_text(encoding="utf-8"))
+        self.assertIn("# Title", (d / "task.md").read_text(encoding="utf-8"))
 
     def test_set_status_refuses_a_corrupt_task_contract(self):
         d = self.task("task-a")
@@ -357,7 +357,7 @@ class TestTaskFile(Base):
     def test_status_must_be_known(self):
         self.task("task-a")
         with self.assertRaises(ts.StateError):
-            ts.set_status(self.root, "task-a", "почти-готово")
+            ts.set_status(self.root, "task-a", "almost-done")
 
     def test_slug_cannot_escape_the_tasks_directory(self):
         for bad in ("../evil", "a/b", ".hidden", ""):

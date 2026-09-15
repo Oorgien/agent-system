@@ -1,24 +1,24 @@
 # Agent System
 
-Локальный CLI для подключения общей схемы агентов, скиллов, памяти и состояния задач
-к существующему Git-проекту. Python 3.11+, Git, Bash; macOS и Linux. Без зависимостей
-и обращения к моделям из CLI.
+A local CLI that adds a shared system of agents, skills, memory, and task state
+to an existing Git project. Requires Python 3.11+, Git, and Bash; supports macOS and Linux.
+No dependencies or model calls from the CLI.
 
-## Установка команды
+## Install the command
 
-Оставьте этот клон в постоянном каталоге. Один раз добавьте команду в PATH:
+Keep this clone in a permanent directory. Add the command to PATH once:
 
 ```bash
 mkdir -p ~/.local/bin
 ln -s /absolute/path/to/agent-system/bin/agent-system ~/.local/bin/agent-system
-# ~/.local/bin должен входить в PATH
+# ~/.local/bin must be on PATH
 agent-system --version
 ```
 
-Существующую одноимённую команду не заменяйте без проверки. Перемещение клона требует
-обновления этой ссылки. Все исполняемые инструменты остаются в клоне.
+Inspect any existing command with the same name before replacing it. If you move
+the clone, update this link. All executable tools remain in the clone.
 
-## Подключение проекта
+## Connect a project
 
 ```bash
 cd ~/codes/existing-project
@@ -27,182 +27,184 @@ agent-system init
 agent-system doctor
 ```
 
-Из вложенной папки выбирается корень текущего worktree. Явный выбор:
+When run from a subdirectory, the command selects the current worktree's root. To select one explicitly:
 
 ```bash
 agent-system init --project /path/to/project
 ```
 
-Устанавливаются канонические роли, скиллы из `skills/`, нативные определения и шаблоны задач.
-В AGENTS.md, CLAUDE.md и .gitignore добавляются маркированные блоки; существующий текст
-сохраняется. Контракт лежит в `.agents/agent-system/contract.md`, учёт файлов — в
-`.agents/agent-system.json`. Их можно коммитить вместе с установленными определениями.
-Чужие файлы, имена ролей/скиллов и симлинки не перезаписываются. При конфликте сначала
-разрешите его вручную и повторите команду. Смысловые противоречия старых правил и
-контракта нужно проверить с агентом: CLI проверяет файлы, а не значение инструкций.
+The CLI installs canonical roles, skills from `skills/`, native definitions, and task templates.
+It adds marked blocks to AGENTS.md, CLAUDE.md, and .gitignore, preserving existing text.
+The contract lives in `.agents/agent-system/contract.md`; file ownership is recorded in
+`.agents/agent-system.json`. Both can be committed with the installed definitions.
+Files, role/skill names, and symlinks owned by others are not overwritten. Resolve any
+conflicts manually before running the command again. Review semantic conflicts between
+existing rules and the contract with an agent: the CLI checks files, not the meaning
+of instructions.
 
-Повторный init безопасен. Обновление из текущего локального клона выполняется отдельно:
+Running init again is safe. Updating from the current local clone is a separate action:
 
 ```bash
 agent-system update --dry-run
 agent-system update
 ```
 
-CLI не обновляет сам клон и не использует сеть. Update заменяет только неизменённые
-файлы/блоки из manifest. Локальные правки останавливают обновление; автоматического merge,
-force или присвоения чужих файлов нет. Пользовательские правки вне собственных блоков
-сохраняются. Для изменения стандартных ролей меняйте канон в клоне инструмента, затем
-применяйте update к выбранным проектам.
+The CLI does not update the clone itself or use the network. Update replaces only
+unchanged files/blocks listed in the manifest. Local edits stop the update; there is no
+automatic merge, force, or adoption of files owned by others. User edits outside the
+managed blocks are preserved. To change the standard roles, edit the canonical definitions
+in the tool's clone, then run update in the selected projects.
 
-`doctor` проверяет manifest, drift, ссылки, состояние задач и память без записи.
-Коды завершения: 0 — успех (возможны предупреждения), 1 — конфликт/неисправность,
-2 — ошибка вызова или выполнения. Запуск агентов и доступность моделей doctor не проверяет.
+`doctor` checks the manifest, drift, links, task state, and memory without writing anything.
+Exit codes: 0 — success (warnings are possible), 1 — conflict or detected fault,
+2 — invocation or execution error. Doctor does not check agent execution or model availability.
 
 ## Checkpoint
 
-Скилл `checkpoint` вызывается только вручную по явной команде пользователя или агента.
-Завершение этапа, работы, смена харнесса и лимиты не запускают его автоматически.
-Он создаёт **новую запись** `journal/<ts>-<hash32>-<ordinal6>.md`
-(`agent-system task checkpoint`) и проверяет запись; существующие записи не переписываются.
-`ts` имеет вид `YYYYMMDDThhmmssZ`, `hash32` — первые 32 строчных hex-символа SHA-256
-полного session id, `ordinal6` начинается с `000001`. CLI записывает и синхронизирует
-временный файл, затем атомарно публикует его без перезаписи; при занятом имени пробует
-следующий ordinal. Совпадение префиксов session id или коллизия хеша не теряют запись.
+The `checkpoint` skill runs only when explicitly invoked by the user or an agent.
+Finishing a stage or task, switching harnesses, and reaching limits do not trigger it automatically.
+It creates a **new entry** at `journal/<ts>-<hash32>-<ordinal6>.md`
+(`agent-system task checkpoint`) and verifies the write; existing entries are not rewritten.
+`ts` has the format `YYYYMMDDThhmmssZ`, `hash32` is the first 32 lowercase hex characters
+of the full session ID's SHA-256 hash, and `ordinal6` starts at `000001`. The CLI writes
+and syncs a temporary file, then publishes it atomically without overwriting; if the name
+is taken, it tries the next ordinal. Matching session ID prefixes or hash collisions do not lose entries.
 
-При возобновлении агент читает `task.md`, весь журнал командой
-`agent-system task journal [slug]` и сверяет Git. Без slug берётся привязка чата.
-Читатель проверяет записи, выдаёт legacy `journal.md` первым, затем старые и новые
-файлы в каноническом порядке; повреждённые записи вызывают ошибку, а старые не
-конвертируются. Сортировка детерминирована, но не гарантирует причинный порядок между
-машинами. Контекст после последней записи может быть потерян. Автоматический порог
-остатка контекста <=10% не реализован.
+On resume, the agent reads `task.md`, reads the entire journal with
+`agent-system task journal [slug]`, and checks Git. Without a slug, the chat's binding is used.
+The reader validates entries, returns legacy `journal.md` first, then old and new files
+in canonical order; corrupted entries cause an error, and old entries are not converted.
+Sorting is deterministic but does not guarantee causal order across machines.
+Context acquired after the last entry may be lost. An automatic trigger at <=10%
+remaining context is not implemented.
 
-## Память и worktrees
+## Memory and worktrees
 
-Ключ: `--memory-key` → общий локальный `agents.memoryKey` → существующая ссылка → имя основного дерева + `-memory`.
-Хранилище: `AGENTS_MEMORY_STORE` → общий локальный `agents.memoryStore` →
-существующая ссылка → `~/.agents-memory`. Оба значения сохраняются в Git config; абсолютный путь не попадает
-в manifest. Корень хранилища — обычная папка без `.git`.
-Каждый `<key>/` — отдельный Git-репозиторий памяти проекта. CLI не создаёт коммиты,
-не публикует память и не настраивает remote; для синхронизации нужен отдельный
-приватный remote каждого проекта. Сохранённые ключи и корректные ссылки не переименовываются.
+Key: `--memory-key` → shared local `agents.memoryKey` → existing link → main worktree name + `-memory`.
+Store: `AGENTS_MEMORY_STORE` → shared local `agents.memoryStore` →
+existing link → `~/.agents-memory`. Both values are saved in Git config; the absolute path
+is not included in the manifest. The store root is an ordinary directory without `.git`.
+Each `<key>/` is a separate Git repository for that project's memory. The CLI does not create
+commits, publish memory, or configure remotes; synchronization requires a separate private
+remote for each project. Saved keys and valid links are not renamed.
 
 ```bash
 AGENTS_MEMORY_STORE=/custom/store agent-system init --memory-key my-project
 ```
 
-В каждом новом worktree выполните init. Он использует общие сохранённые настройки.
-В свежем клоне этих локальных настроек нет — укажите прежние ключ и хранилище явно.
-Существующую корректную ссылку CLI сохраняет; несовпадение с выбранными настройками
-требует явного разрешения, а не скрытого переключения памяти.
+Run init in each new worktree. It uses the shared saved settings.
+A fresh clone does not have these local settings — specify the previous key and store explicitly.
+The CLI preserves an existing valid link; a mismatch with the selected settings requires
+explicit resolution, rather than silently switching memory.
 
-Если `.agents/memory` — обычная папка, init останавливается до записи. Прочитайте
-[скилл миграции](skills/migrate-memory/SKILL.md) текущим Claude/Codex. Он подготовит
-факты «один файл — один факт» и отчёт соответствия, сохранив оригинал. После просмотра:
+If `.agents/memory` is an ordinary directory, init stops before writing anything. Have
+the current Claude/Codex read the [migration skill](skills/migrate-memory/SKILL.md). It prepares
+one fact per file and a correspondence report, preserving the original. After review:
 
 ```bash
 agent-system init --memory-from /path/to/reviewed-package --dry-run
 agent-system init --memory-from /path/to/reviewed-package
 ```
 
-Исходная память и отчёт сохраняются в уникальном каталоге `agent-system-backups` внутри
-Git common directory. Legacy-копии не входят в действующую память, не удаляются автоматически
-и не переносятся при clone. Не удаляйте исходный репозиторий, пока нужные архивы не сохранены.
-Скилл не выполняет вызовы другого харнесса: смысловую переработку делает текущий агент.
+The original memory and report are preserved in a unique directory under `agent-system-backups`
+inside the Git common directory. Legacy copies are not active memory, are not deleted automatically,
+and are not transferred by clone. Do not delete the original repository until you have saved
+any archives you need. The skill does not invoke another harness: the current agent performs
+the semantic restructuring.
 
-Старое общее Git-хранилище (с `.git` в корне) отклоняется до изменений, включая dry-run.
-Сначала сохраните его историю и подготовьте отдельные репозитории памяти в обычной
-папке. CLI не удаляет старую `.git` и не переносит историю автоматически.
+The old shared Git store (with `.git` at its root) is rejected before any changes, including dry-run.
+First preserve its history and prepare separate memory repositories inside an ordinary directory.
+The CLI does not delete the old `.git` or migrate its history automatically.
 
-В Git проекта игнорируются `.agents/memory`, `.agents/state/sessions/`,
-`.agents/runs.jsonl` и legacy `.agents/state/ACTIVE`/`LOCK` до миграции —
-а не вся `.agents/`: определения и состояние задач остаются
-версионируемыми. Завершённые `task.md` и журнал сохраняются после merge/squash;
-при старте читается журнал выбранной задачи, к завершённым обращаются по необходимости.
+The project's Git ignore rules exclude `.agents/memory`, `.agents/state/sessions/`,
+`.agents/runs.jsonl`, and legacy `.agents/state/ACTIVE`/`LOCK` until migration —
+not the entire `.agents/`: definitions and task state remain versionable.
+Completed `task.md` files and journals are retained after merge/squash;
+on startup, the selected task's journal is read, and completed tasks are consulted as needed.
 
-## Задачи и чаты
+## Tasks and chats
 
-Задача не привязана ни к ветке, ни к рабочему дереву: её выбирает **чат**, а привязка
-лежит в `.agents/state/sessions/<session-id>` (gitignored, одна строка JSON). Несколько
-задач в дереве и несколько чатов на одной задаче — норма.
+A task is tied to neither a branch nor a worktree: the **chat** selects it, and the binding
+lives in `.agents/state/sessions/<session-id>` (gitignored, one JSON line). Multiple tasks
+in a worktree and multiple chats on the same task are normal.
 
 ```bash
-agent-system task list                # задачи, их status и привязанные чаты
-agent-system task status              # что видит текущий чат
-agent-system task new <slug>          # создать задачу из шаблона
-agent-system task bind <slug>         # привязать чат; --force для перепривязки
-agent-system task unbind              # снять привязку чата
-agent-system task journal [slug]      # прочитать журнал целиком
-agent-system task checkpoint          # новая запись журнала, текст со stdin
+agent-system task list                # tasks, their status, and bound chats
+agent-system task status              # what the current chat sees
+agent-system task new <slug>          # create a task from the template
+agent-system task bind <slug>         # bind the chat; --force to rebind
+agent-system task unbind              # remove the chat's binding
+agent-system task journal [slug]      # read the entire journal
+agent-system task checkpoint          # new journal entry, text from stdin
 agent-system task set-status <slug> <status>
 ```
 
-Session id CLI берёт из окружения харнесса: `AGENTS_SESSION_ID`,
-`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`/`CODEX_SESSION_ID`. Проверяется точное
-значение целиком: 1–128 ASCII-символов `[A-Za-z0-9._-]`, кроме `.` и `..`.
-Служебные `.locks`, `.gitkeep`, `.DS_Store` и `.agents-<32 lowercase hex>`
-также зарезервированы.
-Пробелы и переводы строк не обрезаются; невалидный id **отвергается, а не подчищается**.
-Если id нет ни в одном источнике, чат работает без привязки — это законный режим.
+The CLI obtains the session ID from the harness environment: `AGENTS_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`/`CODEX_SESSION_ID`. The exact complete
+value is validated: 1–128 ASCII characters from `[A-Za-z0-9._-]`, except `.` and `..`.
+The internal names `.locks`, `.gitkeep`, `.DS_Store`, and `.agents-<32 lowercase hex>`
+are also reserved.
+Spaces and newlines are not trimmed; an invalid ID is **rejected, not sanitized**.
+If none of the sources provides an ID, the chat works without a binding — a valid mode.
 
-Привязка **никогда не создаётся молча**: даже единственную активную задачу CLI
-предлагает, но не выбирает. `bind`/`unbind` используют короткую OS-блокировку `flock`
-одной сессии; `--force` разрешает перепривязку, но не обходит блокировку и проверки.
-Файлы в `sessions/.locks/` сохраняются, блокировка освобождается ОС при выходе процесса.
+A binding is **never created silently**: even if there is only one active task,
+the CLI suggests it but does not select it. `bind`/`unbind` use a short OS `flock`
+for one session; `--force` permits rebinding but bypasses neither the lock nor validation.
+Files in `sessions/.locks/` are retained; the OS releases the lock when the process exits.
 
-Старый `.agents/state/ACTIVE` снимается после успешного `bind` к указанной в нём
-задаче только при отсутствии `LOCK`. Привязка к другой задаче и наличие `LOCK`
-сохраняют `ACTIVE`. `LOCK` автоматически не удаляется: перед ручным удалением проверьте,
-что старая сессия больше не работает, затем повторите соответствующий `bind`.
-Оба legacy-файла остаются gitignored до миграции.
+The old `.agents/state/ACTIVE` is removed after a successful `bind` to the task it names
+only if `LOCK` is absent. Binding to another task or the presence of `LOCK` preserves
+`ACTIVE`. `LOCK` is not deleted automatically: before removing it manually, verify
+that the old session is no longer running, then repeat the corresponding `bind`.
+Both legacy files remain gitignored until migration.
 
-`task new` эксклюзивно создаёт каталог: два запуска с одним slug не перезаписывают
-друг друга. Каталог без `task.md` после сбоя — обнаруживаемая ошибка; CLI не удаляет
-его автоматически. Перед повторным созданием проверьте оставшиеся файлы вручную.
+`task new` creates the directory exclusively: two invocations with the same slug do not
+overwrite each other. A directory left without `task.md` after a failure is a detectable
+error; the CLI does not remove it automatically. Inspect the remaining files manually before retrying.
 
-`task checkpoint <slug>` требует существующую задачу со статусом `active` или `paused`,
-как и checkpoint по привязке. Завершённую задачу сначала явно возобновите через
-`task set-status <slug> active`. Для `--stage` допустимы 1–64 ASCII-символа по полному
-шаблону `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; пробелы, `#` и переводы строк отвергаются.
+`task checkpoint <slug>` requires an existing task with status `active` or `paused`,
+just like a checkpoint using a binding. First explicitly resume a completed task with
+`task set-status <slug> active`. `--stage` accepts 1–64 ASCII characters matching the
+complete pattern `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; spaces, `#`, and newlines are rejected.
 
-## Прерванная установка
+## Interrupted installation
 
-Перед изменениями CLI создаёт per-worktree `agent-system-pending.json` в Git directory,
-а резервные копии — в общем `agent-system-backups/<id>`. При сбое marker остаётся,
-повторные init/update/doctor останавливаются. CLI не обещает транзакцию файлов и Git config.
+Before making changes, the CLI creates a per-worktree `agent-system-pending.json` in the Git directory
+and backups in the shared `agent-system-backups/<id>`. If an operation fails, the marker remains,
+and subsequent init/update/doctor invocations stop. The CLI does not promise a transaction across files and Git config.
 
-Для восстановления с агентом используйте marker и `record.json` в указанной резервной копии:
-сопоставьте `before` с текущими файлами; восстановите прежние обычные файлы из `files/`,
-прежние ссылки по `target`, а появившиеся файлы удаляйте только после проверки, что в них
-нет более поздних пользовательских изменений. Восстановите два значения `memory_config`
-(значение null означает отсутствие ключа). Для миграции используйте `legacy-original`
-или проверенную `legacy-memory`; никогда не удаляйте внешнее хранилище целиком.
-Пустые каталоги и скопированные факты можно оставить. Только после проверки восстановления
-удалите pending marker и повторите команду. Резервную копию сохраните.
+To recover with an agent, use the marker and `record.json` in the specified backup:
+compare `before` with the current files; restore previous regular files from `files/`
+and previous links using `target`. Delete newly created files only after verifying that
+they contain no later user changes. Restore both `memory_config` values
+(null means the key was absent). For migration, use `legacy-original`
+or verified `legacy-memory`; never delete the entire external store.
+Empty directories and copied facts may be left in place. Only after verifying recovery
+should you delete the pending marker and rerun the command. Keep the backup.
 
-## Скиллы CLI и локальные скиллы
+## CLI skills and local skills
 
-`skills/` — исходники двух поставляемых скиллов: `checkpoint` и `migrate-memory`.
-CLI устанавливает их в `.agents/skills/` целевого проекта; чужие скиллы сохраняются.
-Изменения поставляемых скиллов вносите в `skills/`, затем выполняйте `update`.
+`skills/` contains the sources of the two shipped skills: `checkpoint` and `migrate-memory`.
+The CLI installs them in `.agents/skills/` in the target project; other skills are preserved.
+Edit shipped skills in `skills/`, then run `update`.
 
-`.agents/` в этом клоне — локальные материалы разработки CLI и целиком gitignored;
-это отдельная политика от установленных файлов целевого проекта. `.agents/skills/`
-содержит локальные скиллы: установщик их не читает, добавления и правки не входят в поставку.
-Копии независимы и автоматически не синхронизируются. `setup.sh` подключает локальные
-скиллы для работы в клоне; установку в другие проекты выполняет CLI.
+`.agents/` in this clone contains local CLI development material and is entirely gitignored;
+this is a separate policy from that of installed files in a target project. `.agents/skills/`
+contains local skills: the installer does not read them, and additions and edits are not shipped.
+The copies are independent and are not synchronized automatically. `setup.sh` connects local
+skills for work in the clone; the CLI handles installation into other projects.
 
-## Проверка и разработка
+## Testing and development
 
 ```bash
 python3 -m unittest discover tools/tests -v
 python3 tools/gen_agents.py --check
 ```
 
-Тесты CLI работают на временных репозиториях и хранилищах. Старые тесты генератора
-временно правят checkout: запускайте полную suite в изолированной копии.
-Старые developer-команды и setup.sh продолжают работать в клоне; добавлен `--project`.
-Подробности предыдущего устройства: [development](docs/development.md).
+CLI tests use temporary repositories and stores. Older generator tests temporarily modify
+the checkout: run the full suite in an isolated copy.
+The existing developer commands and setup.sh still work in the clone; `--project` has been added.
+For details of the earlier structure, see [development](docs/development.md).
 
-Реальная приёмка харнессов: [acceptance](docs/acceptance.md). Зелёные тесты CLI не
-доказывают исполнение ролей конкретной версией Claude/Codex и доступность моделей.
+For real harness acceptance testing, see [acceptance](docs/acceptance.md). Passing CLI tests do not
+prove that a particular Claude/Codex version executes the roles or that models are available.

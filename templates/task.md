@@ -1,35 +1,35 @@
 ---
 id: <slug>
 status: active        # active | paused | done | abandoned
-# branch — подсказка, не идентичность: задача не привязана к ветке
+# branch is a hint, not an identity: the task is not tied to a branch
 branch: <branch>
 created: <created>
 ---
 
-# <Название задачи>
+# <Task title>
 
 ## Goal
 
-Что должно быть достигнуто. Одним абзацем, без плана реализации.
+What must be achieved. One paragraph, without an implementation plan.
 
 ## Scope
 
-Что входит.
+What is included.
 
 ## Non-goals
 
-Что сознательно НЕ входит. Этот раздел важнее, чем кажется: он останавливает
-расползание задачи и объясняет будущей сессии, почему что-то не сделано.
+What is deliberately NOT included. This section matters more than it seems: it prevents
+scope creep and explains to a future session why something was not done.
 
 ## Acceptance criteria
 
-Проверяемые условия готовности. Не «работает хорошо», а то, что можно запустить
-или посмотреть.
+Verifiable completion criteria. Not "works well," but something that can be run
+or inspected.
 
 ## Constraints
 
-Ограничения: совместимость, производительность, что нельзя ломать.
+Constraints: compatibility, performance, and what must not be broken.
 
 ## Known relevant context
 
-Что уже известно на старте: файлы, модули, предыдущие решения.
+What is already known at the start: files, modules, previous decisions.

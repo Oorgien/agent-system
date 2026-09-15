@@ -1,92 +1,95 @@
 ---
 name: checkpoint
 description: >
-  Сохраняет состояние задачи новой записью в journal/ только по явной ручной
-  команде пользователя или агента. Invoke only on an explicit manual checkpoint command.
+  Saves task state as a new journal/ entry only on an explicit manual user or agent
+  command. Invoke only on an explicit manual checkpoint command.
 ---
 
 # Checkpoint
 
-Checkpoint вызывается **только вручную по явной команде пользователя или агента**
-через скилл `checkpoint` (`.agents/skills/checkpoint/`). Завершение этапа или работы,
-результат сабагента, прерывание, переключение харнесса и приближение лимита
-не вызывают checkpoint автоматически и не требуют его обязательного вызова.
+Invoke checkpoint **only manually, on an explicit user or agent command**, through
+the `checkpoint` skill (`.agents/skills/checkpoint/`). Completing a stage or task,
+receiving a subagent result, interruption, switching harnesses, and approaching a
+limit neither trigger a checkpoint automatically nor make one mandatory.
 
-Явно вызванный checkpoint записывает main после оценки результатов; сабагенты
-не пишут canonical task state. Если запись упала, checkpoint не считается
-сохранённым: main сообщает об ошибке. Без явной команды запись не является
-условием перехода к следующему этапу.
+Main writes an explicitly requested checkpoint after evaluating the results; subagents
+do not write canonical task state. If the write fails, the checkpoint is not considered
+saved: main reports the error. Without an explicit command, a write is not a condition
+for proceeding to the next stage.
 
-Механически checkpoint — **создание нового файла** в `journal/`, а не дописывание
-в общий. CLI полностью записывает временный файл, выполняет `flush`/`fsync`, затем
-атомарно публикует его через `link` без перезаписи существующего пути. При занятом
-имени повторяет попытку со следующим ordinal; общая блокировка журнала не нужна.
+Mechanically, a checkpoint **creates a new file** in `journal/` instead of appending to
+a shared file. The CLI writes a complete temporary file, calls `flush`/`fsync`, then
+publishes it atomically using `link` without overwriting an existing path. If the name
+is taken, it retries with the next ordinal; no shared journal lock is needed.
 
-## Процедура
+## Procedure
 
 ```text
-0. Если есть параллельные записи в рабочее дерево:
-   остановить новые делегации; дождаться или прервать текущие работы,
-   проверить их результат.
+0. If there are parallel writes to the worktree:
+   stop new delegations; wait for or interrupt ongoing work,
+   and check its results.
 
-1. Прочитать task.md и журнал целиком через agent-system task journal [slug].
-   Без slug используется привязка чата. При ошибке чтения сообщить о ней;
-   повреждённую запись не пропускать.
-2. Проверить git status и relevant diff.
-3. Создать НОВУЮ запись journal/<ts>-<hash32>-<ordinal6>.md со всем существенным, что
-   в журнале ещё не отражено.
-4. Зафиксировать состояние рабочего дерева — чисто или грязно и почему.
+1. Read task.md and the entire journal through agent-system task journal [slug].
+   Omitting the slug uses the chat's binding. Report any reading error;
+   do not skip a corrupted entry.
+2. Check git status and the relevant diff.
+3. Create a NEW journal/<ts>-<hash32>-<ordinal6>.md entry with everything essential
+   that is not yet reflected in the journal.
+4. Record the worktree state — clean or dirty, and why.
 ```
 
-Имя записи и её фронтматтер собирает CLI — руками их не составляют:
+The CLI constructs the entry filename and frontmatter; do not assemble them manually:
 
 ```bash
 agent-system task checkpoint --stage implementer <<'EOF'
-<текст записи>
+<entry text>
 EOF
 ```
 
-Задача берётся из привязки текущего чата; при желании — `task checkpoint <slug>`.
-В обоих случаях она должна существовать со статусом `active` или `paused`.
-Завершённую задачу сначала явно возобновить через `task set-status <slug> active`;
-явный slug не создаёт задачу и не обходит проверку статуса.
+The task comes from the current chat's binding; optionally, use `task checkpoint <slug>`.
+In both cases, it must exist with status `active` or `paused`. Explicitly resume a
+completed task first with `task set-status <slug> active`; an explicit slug neither
+creates a task nor bypasses status validation.
 
-Session id CLI берёт из окружения (`AGENTS_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`,
-`CODEX_THREAD_ID`/`CODEX_SESSION_ID`). Если его нет, нужен явный `--session-id` с настоящим
-id чата. Проверяется точное значение без обрезки: 1–128 ASCII-символов `[A-Za-z0-9._-]`,
-кроме отдельных `.` и `..`, а также служебных `.locks` и `.agents-<32 lowercase hex>`.
-`--stage` — 1–64 ASCII-символа по полному шаблону
-`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; пробелы, `#` и переводы строк недопустимы.
+The CLI gets the session ID from the environment (`AGENTS_SESSION_ID`,
+`CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`/`CODEX_SESSION_ID`). If none is available,
+provide an explicit `--session-id` with the real chat ID. The exact value is validated
+without trimming: 1–128 ASCII characters from `[A-Za-z0-9._-]`, except standalone `.`
+and `..`, and the internal names `.locks` and `.agents-<32 lowercase hex>`.
+`--stage` is 1–64 ASCII characters fully matching
+`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; spaces, `#`, and newlines are not allowed.
 
-Шаг 4 не пропускать даже при чистом дереве: «чисто» — тоже информация.
+Do not skip step 4 even when the tree is clean: "clean" is information too.
 
-## Что писать
+## What to write
 
-Критерий один:
+Write entry prose in English; preserve literal identifiers, commands, and quoted evidence.
 
-> Всё существенное для продолжения, что нельзя восстановить из файлов репозитория.
+There is one criterion:
 
-- новое решение и **принятое намерение**, включая решение о следующем шаге;
-- важный результат;
-- отвергнутый подход **с причиной отклонения**;
-- завершённый кусок реализации;
-- существенный blocker;
-- результат проверок, включая «не запускались»;
-- состояние рабочего дерева.
+> Anything essential for continuing that cannot be recovered from repository files.
 
-Намерение пишется наравне с результатом. Решение «сначала проверить совместимость
-миграции, потом реализовывать» не оставляет следа в коде — если его не записать,
-оно не восстановится ниоткуда.
+- a new decision and **agreed intent**, including a decision about the next step;
+- an important result;
+- a rejected approach **with the reason for rejection**;
+- a completed piece of implementation;
+- a significant blocker;
+- check results, including "not run";
+- worktree state.
 
-## Что НЕ писать
+Intent is recorded alongside results. A decision such as "first check migration
+compatibility, then implement" leaves no trace in the code; without a record,
+it cannot be recovered from anywhere.
 
-Полный пересказ состояния каждый раз. Записывается дельта — что изменилось на этом
-этапе. Журнал, в котором девять десятых повторов, перестают перечитывать, и тогда
-он не выполняет свою единственную работу.
+## What NOT to write
 
-## Формат
+A complete retelling of the state every time. Record the delta — what changed at this
+stage. People stop rereading a journal when nine tenths of it is repetition; it then
+fails at its only purpose.
 
-Файл: `journal/20260909T182014Z-8231adf1ce782ae5bd7a52c329e1ceae-000001.md`
+## Format
+
+File: `journal/20260909T182014Z-8231adf1ce782ae5bd7a52c329e1ceae-000001.md`
 
 ```md
 ---
@@ -95,36 +98,36 @@ at: 2026-09-09T18:20:14Z
 stage: implementer
 ---
 
-Заменял legacy-кэш через абстракцию репозитория.
-Отвергнуто: абстракция не даёт атомарного compare-and-set, который нужен
-текущему пути синхронизации.
+Tried replacing the legacy cache through the repository abstraction.
+Rejected: the abstraction does not expose atomic compare-and-set, which the current
+synchronization path requires.
 
-Решение: идти через прямой доступ к стору, обёртку добавить позже отдельной задачей.
-Проверки: не запускались.
-Рабочее дерево: грязно — cache_adapter.py в промежуточном состоянии, оставлен
-намеренно как основа для следующего шага.
+Decision: access the store directly; add a wrapper later as a separate task.
+Checks: not run.
+Worktree: dirty — cache_adapter.py is in an intermediate state, intentionally left
+as the starting point for the next step.
 ```
 
-Имя имеет вид `<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`. `hash32` — первые
-32 строчных hex-символа SHA-256 полного session id; ordinal для пары timestamp/hash
-начинается с `000001` и увеличивается при коллизии. Первые восемь символов session id
-не считаются уникальными; exclusive-публикация защищает и при коллизии хеша.
+The filename has the form `<YYYYMMDDThhmmssZ>-<hash32>-<ordinal6>.md`. `hash32` is the
+first 32 lowercase hexadecimal characters of the full session ID's SHA-256 hash;
+the ordinal for a timestamp/hash pair starts at `000001` and increases on collision.
+The first eight characters of a session ID are not treated as unique; exclusive
+publication also protects against hash collisions.
 
-Канонический читатель выдаёт legacy `journal.md` первым, затем старые и новые записи
-в проверенном порядке. Старое неоднозначное имя разбирается с учётом полного `session`
-в метаданных; повреждённая запись вызывает ошибку. Старые файлы не конвертируются.
-Сортировка по UTC timestamp, hash32, числовому ordinal и имени файла детерминирована,
-но не гарантирует причинный порядок между
-машинами. Общего счётчика задачи нет.
+The canonical reader returns legacy `journal.md` first, then old and new entries in
+a validated order. Ambiguous old filenames are parsed using the full `session`
+metadata; a corrupted entry raises an error. Old files are not converted. Sorting by
+UTC timestamp, hash32, numeric ordinal, and filename is deterministic, but does not
+guarantee causal ordering across machines. There is no shared task counter.
 
-## Инварианты
+## Invariants
 
-- Чекпойнт делает **оркестратор после интерпретации результата**, не сабагент.
-  Сабагент не знает, принят ли его вывод.
-- Запись **добавляется**, существующие не переписываются. Журнал append-only
-  на уровне каталога, поэтому одновременный чекпойнт двух чатов в одну задачу —
-  два разных файла, а не гонка за один.
-- Если запись явно вызванного checkpoint упала, он не считается сохранённым;
-  сообщить об ошибке, не выдавая запись за успешную.
-- В журнал не попадают непроверенные выводы сабагентов как принятые факты.
-  Отвергнутое сохраняется с явным статусом и причиной.
+- The **orchestrator creates the checkpoint after interpreting the result**, not the
+  subagent. A subagent does not know whether its conclusion has been accepted.
+- An entry is **added**; existing entries are not overwritten. The journal is
+  append-only at the directory level, so simultaneous checkpoints from two chats for
+  one task produce two separate files rather than a race for one file.
+- If writing an explicitly requested checkpoint fails, it is not considered saved;
+  report the error without presenting the write as successful.
+- Unverified subagent conclusions do not enter the journal as accepted facts.
+  Rejected conclusions are retained with an explicit status and reason.
