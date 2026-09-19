@@ -386,7 +386,9 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(len(set(entries)), 2)
 
         out = self.cli('task','list',env=self.chat('chat-one'))
-        self.assertIn('chat-one, chat-two', out.stdout)
+        self.assertIn('        chats:\n', out.stdout)
+        self.assertIn(': chat-one\n', out.stdout)
+        self.assertIn(': chat-two\n', out.stdout)
         self.cli('doctor')
 
     def test_journal_reader_handles_bound_explicit_and_legacy_entries(self):

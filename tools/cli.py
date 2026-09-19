@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import check_state
+import chat_titles
 import gen_agents
 import task_state as ts
 from adapters import RenderError, Inexpressible
@@ -65,16 +66,23 @@ def task_template(root):
     return (local if local.is_file() else source).read_text(encoding="utf-8")
 
 
-def describe(root, slug, records):
+def describe(root, slug, records, titles=None):
     meta, err = ts.task_meta(root, slug)
     if err:
         return f'{slug:<24} ERR  {err}'
     chats = sorted(sid for sid, r in records.items() if r["slug"] == slug)
     entries, broken = ts.journal_entries(root, slug)
-    tail = f', chats: {", ".join(chats)}' if chats else ''
-    tail += f', UNREADABLE ENTRIES: {len(broken)}' if broken else ''
-    return (f'{slug:<24} {meta.get("status", "?"):<10} '
-            f'branch={meta.get("branch") or "-"}, entries: {len(entries)}{tail}')
+    tail = f', UNREADABLE ENTRIES: {len(broken)}' if broken else ''
+    lines = [f'{slug:<24} {meta.get("status", "?"):<10} '
+             f'branch={meta.get("branch") or "-"}, entries: {len(entries)}{tail}']
+    titles = titles or {}
+    for harness in sorted({records[sid]['harness'] for sid in chats}):
+        lines.extend((f'    {chat_titles.display(harness)}:', '        chats:'))
+        for sid in chats:
+            if records[sid]['harness'] == harness:
+                title = chat_titles.display(titles.get((harness, sid))) or 'Untitled'
+                lines.append(f'            {title}: {sid}')
+    return '\n'.join(lines)
 
 
 def task_list(root):
@@ -84,8 +92,9 @@ def task_list(root):
     slugs = ts.tasks(root)
     if not slugs:
         print('No tasks')
+    titles = chat_titles.lookup(root, {sid: r for sid, r in records.items() if r['slug'] in slugs})
     for slug in slugs:
-        print(describe(root, slug, records))
+        print(describe(root, slug, records, titles))
     orphan = {sid: r for sid, r in records.items() if r["slug"] not in slugs}
     for sid, record in sorted(orphan.items()):
         print(f'WARN: chat {sid} is bound to a nonexistent task {record["slug"]!r}')

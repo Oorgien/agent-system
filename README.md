@@ -59,6 +59,30 @@ in the tool's clone, then run update in the selected projects.
 Exit codes: 0 — success (warnings are possible), 1 — conflict or detected fault,
 2 — invocation or execution error. Doctor does not check agent execution or model availability.
 
+## Task list and chat names
+
+Run `agent-system task list` in the project (or add `--project /path/to/project`).
+The task header shows status, branch, and journal entry count. Bound chats appear
+below it, grouped by harness, with their local UI title and full session ID:
+
+```text
+task-a                   active     branch=main, entries: 1
+    claude:
+        chats:
+            Review implementation: <session-id>
+    codex:
+        chats:
+            Implement feature: <session-id>
+```
+
+Titles are looked up on each invocation, so local renames appear without rebinding.
+Codex titles come from its read-only state database or session index (`CODEX_HOME`,
+default `~/.codex`). Claude titles come from exact-session title events or rename
+sidecars under `CLAUDE_CONFIG_DIR` (default `~/.claude`). These local formats are
+version-dependent. Unavailable titles appear as `Untitled`; remote-only chats and
+unknown harnesses still show their IDs. Titles are not saved in bindings, and task
+listing does not change the applications' data. No title is synthesized from message text.
+
 ## Checkpoint
 
 The `checkpoint` skill runs only when explicitly invoked by the user or an agent.
