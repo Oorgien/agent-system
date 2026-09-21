@@ -7,11 +7,6 @@ description: >
 
 role: explore
 
-models:
-  claude: sonnet
-  codex: gpt-5-codex        # VERIFY: check against the current Codex model list
-effort: medium
-
 capabilities:
   - filesystem-read
   - code-search

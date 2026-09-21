@@ -7,11 +7,6 @@ description: >
 
 role: review
 
-models:
-  claude: opus
-  codex: gpt-5-codex        # VERIFY: check against the current Codex model list
-effort: high
-
 capabilities:
   - filesystem-read
   - code-search

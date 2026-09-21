@@ -32,7 +32,7 @@ CANON_DIR = ROOT / "agents"
 INSTALLED_CANON = Path(".agents/agents")
 ADAPTERS = [claude_adapter, codex_adapter]
 
-REQUIRED = ["name", "description", "role", "models", "effort", "capabilities"]
+REQUIRED = ["name", "description", "role", "capabilities"]
 KNOWN_CAPS = {"filesystem-read", "filesystem-write", "code-search", "shell", "vcs", "web"}
 KNOWN_EFFORT = {"high", "medium", "low"}
 HARNESSES = {"claude", "codex"}
@@ -58,12 +58,12 @@ def validate(a, path):
     if a["name"] != path.stem:
         raise SchemaError(f"{path}: name='{a['name']}' does not match the filename")
 
-    if not isinstance(a["models"], dict) or set(a["models"]) != HARNESSES:
+    if "models" in a and (not isinstance(a["models"], dict) or set(a["models"]) != HARNESSES):
         raise SchemaError(
             f"{path}: 'models' must define exactly {sorted(HARNESSES)}, "
             f"got {sorted(a['models']) if isinstance(a['models'], dict) else a['models']}")
 
-    if a["effort"] not in KNOWN_EFFORT:
+    if "effort" in a and a["effort"] not in KNOWN_EFFORT:
         raise SchemaError(f"{path}: effort='{a['effort']}', allowed values: {sorted(KNOWN_EFFORT)}")
 
     if not isinstance(a["capabilities"], list) or not a["capabilities"]:

@@ -2,8 +2,8 @@
 
 Custom agent schema (Codex documentation, "Agent configuration / Subagents"):
 required keys are `name`, `description`, and `developer_instructions`; regular
-config.toml keys are also allowed. We use `model`, `model_reasoning_effort`,
-and `sandbox_mode`.
+config.toml keys are also allowed. We use `sandbox_mode`; legacy explicit
+`model` and `model_reasoning_effort` pins are supported, but shipped roles omit them.
 
 Phase 5 observations implemented here (docs/harness-differences.md):
 
@@ -21,9 +21,8 @@ Validate output by parsing it: TOML is valid, required keys are present, and pro
 text survives serialization unchanged. Valid syntax does not guarantee a valid
 schema, which is why the incorrect field name originally went unnoticed.
 
-VERIFY: model names come from documentation and have not been tested at runtime.
-If they differ, fix them HERE without changing the canonical definitions.
-That is what the adapter layer is for.
+Launch preferences live in project/chat configuration and are applied by the
+orchestrator, never baked into generated files by this adapter.
 """
 import re
 import tomllib
@@ -59,13 +58,20 @@ def render(agent, source_dir=".agents/agents"):
     desc = agent["description"].strip()
     src = f"{Path(source_dir).as_posix()}/{agent['name']}.md"
 
+    model = agent.get("models", {}).get("codex")
+    effort = agent.get("effort")
+    settings = ""
+    if model and model != "inherit":
+        settings += f'model = "{_esc(model)}"\n'
+    if effort and effort != "inherit":
+        settings += f'model_reasoning_effort = "{_esc(effort)}"\n'
+
     text = (
         f"# {MARKER} from {src} — do not edit\n\n"
         f'name = "{_esc(agent["name"])}"\n'
         f'description = """\n{_ml(_fill(desc))}\n"""\n\n'
-        f'model = "{_esc(agent["models"]["codex"])}"\n'
-        f'model_reasoning_effort = "{_esc(agent["effort"])}"\n\n'
-        f"# capabilities: {', '.join(sorted(caps))}\n"
+        + settings + "\n"
+        + f"# capabilities: {', '.join(sorted(caps))}\n"
         f'sandbox_mode = "{sandbox}"\n\n'
         f'developer_instructions = """\n{_ml(body)}\n"""\n'
     )

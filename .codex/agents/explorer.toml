@@ -7,8 +7,6 @@ documentation. Use when the implementation approach is not yet clear, or when a 
 about the codebase needs answering before deciding.
 """
 
-model = "gpt-5-codex"
-model_reasoning_effort = "medium"
 
 # capabilities: code-search, filesystem-read
 sandbox_mode = "read-only"

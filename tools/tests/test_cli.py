@@ -68,6 +68,82 @@ class TestCLI(unittest.TestCase):
         subprocess.run([sys.executable,str(script),'seal',str(source),str(package)],check=True,capture_output=True,env=self.env)
         return package
 
+    def test_config_project_and_chat_do_not_change_managed_roles(self):
+        self.install()
+        managed = {n: v for n, v in tree(self.repo).items()
+                   if n.startswith((".agents/agents/", ".claude/agents/", ".codex/agents/"))}
+        self.cli('config', 'set', 'reviewer', 'models.codex', 'project-model')
+        self.cli('config', 'set', '--chat', 'defaults', 'models.codex', 'chat-model',
+                 '--session-id', 'chat-a')
+        self.cli('config', 'set', '--chat', 'reviewer', 'effort.codex', 'high',
+                 '--session-id', 'chat-a')
+        a = json.loads(self.cli('config', 'show', '--chat', '--json', '--session-id', 'chat-a').stdout)
+        b = json.loads(self.cli('config', 'show', '--chat', '--json', '--session-id', 'chat-b').stdout)
+        self.assertEqual(a['roles']['reviewer']['models']['codex']['value'], 'chat-model')
+        self.assertEqual(b['roles']['reviewer']['models']['codex']['value'], 'project-model')
+        self.assertEqual(a['roles']['reviewer']['effort']['codex']['value'], 'high')
+        self.cli('config', 'unset', '--chat', 'defaults', 'models.codex', '--session-id', 'chat-a')
+        self.cli('doctor')
+        self.cli('update')
+        self.assertEqual(managed, {n: v for n, v in tree(self.repo).items() if n in managed})
+        self.assertNotIn('.agents/config.toml', json.loads((self.repo/'.agents/agent-system.json').read_text())['files'])
+        self.assertEqual(run_git(self.repo, 'check-ignore', '.agents/state/chat-config/chat-a.json'),
+                         '.agents/state/chat-config/chat-a.json')
+        self.assertFalse((self.repo/'.agents/state/sessions/chat-a').exists())
+
+    def test_init_accepts_existing_empty_canonical_directory(self):
+        (self.repo/'.agents/agents').mkdir(parents=True)
+        self.install()
+        self.cli('doctor')
+        self.assertTrue((self.repo/'.agents/agents/reviewer.md').is_file())
+
+    def test_custom_role_config_survives_update_and_unrelated_installer(self):
+        self.install()
+        custom = self.repo/'.agents/agents/custom.md'
+        custom.write_text((self.repo/'.agents/agents/reviewer.md').read_text().replace('name: reviewer', 'name: custom'))
+        (self.repo/'tools').mkdir()
+        (self.repo/'tools/installer.py').write_text('# unrelated application installer\n')
+        self.cli('config', 'set', 'custom', 'models.codex', 'custom-model')
+        self.cli('update')
+        self.cli('init')
+        self.cli('doctor')
+        resolved = json.loads(self.cli('config', 'show', '--json').stdout)
+        self.assertEqual(resolved['roles']['custom']['models']['codex']['value'], 'custom-model')
+        self.assertTrue(any('custom' in w and 'missing' in w for w in resolved['warnings']))
+
+    def test_config_show_surfaces_native_pins(self):
+        self.install()
+        path = self.repo/'.codex/agents/reviewer.toml'
+        path.write_text(path.read_text() + '\nmodel = "pinned-model"\n')
+        result = json.loads(self.cli('config', 'show', '--json').stdout)
+        self.assertFalse(result['runtime_verified'])
+        self.assertTrue(any('pinned-model' in warning for warning in result['warnings']))
+
+    def test_config_rejects_project_defaults_and_claude_effort(self):
+        self.install()
+        before = tree(self.repo)
+        self.cli('config', 'set', 'defaults', 'models.claude', 'sonnet', code=2)
+        result = self.cli('config', 'set', '--chat', 'reviewer', 'effort.claude', 'high',
+                          '--session-id', 'chat-a', code=2)
+        self.assertIn('/effort', result.stderr)
+        self.assertEqual(before, tree(self.repo))
+
+    def test_invalid_project_config_blocks_update_without_writes(self):
+        self.install()
+        (self.repo/'.agents/config.toml').write_text('[defaults.models]\nclaude = "sonnet"\n')
+        before = tree(self.repo)
+        self.cli('update', code=2)
+        self.assertEqual(before, tree(self.repo))
+        self.cli('doctor', code=2)
+
+    def test_check_state_reports_corrupt_chat_config(self):
+        self.install()
+        path = self.repo/'.agents/state/chat-config/broken.json'
+        path.parent.mkdir(parents=True)
+        path.write_text('{broken')
+        result = self.cli('doctor', code=1)
+        self.assertIn('broken.json', result.stdout)
+
     def test_init_idempotent_from_subdirectory_and_doctor(self):
         source_before=tree(self.source)
         d=self.repo/'nested';d.mkdir()
@@ -82,7 +158,10 @@ class TestCLI(unittest.TestCase):
 
     def test_only_distributable_skills_are_installed_and_updated(self):
         local = self.source/'.agents/skills'
-        shutil.rmtree(local)
+        if local.is_symlink():
+            local.unlink()
+        elif local.exists():
+            shutil.rmtree(local)
         private = local/'private-helper'
         private.mkdir(parents=True)
         (private/'SKILL.md').write_text('local development only')

@@ -70,6 +70,16 @@ class TestFrontmatter(unittest.TestCase):
 
 
 class TestClaudeAdapter(unittest.TestCase):
+    def test_unpinned_role_inherits_session(self):
+        a = agent()
+        del a["models"]
+        del a["effort"]
+        text, warnings = claude_adapter.render(a)
+        self.assertIn("model: inherit", text)
+        self.assertNotIn("\neffort:", text)
+        self.assertIn(a["body"].strip(), text)
+        self.assertEqual(warnings, [])
+
     def test_read_only_agent_gets_no_write_tools(self):
         text, _ = claude_adapter.render(agent())
         line = next(l for l in text.splitlines() if l.startswith("tools:"))
@@ -122,6 +132,16 @@ class TestClaudeAdapter(unittest.TestCase):
 
 
 class TestCodexAdapter(unittest.TestCase):
+    def test_unpinned_role_inherits_without_changing_instructions_or_sandbox(self):
+        a = agent()
+        del a["models"]
+        del a["effort"]
+        data = tomllib.loads(codex_adapter.render(a)[0])
+        self.assertNotIn("model", data)
+        self.assertNotIn("model_reasoning_effort", data)
+        self.assertEqual(data["developer_instructions"].strip(), a["body"].strip())
+        self.assertEqual(data["sandbox_mode"], "read-only")
+
     def test_output_is_valid_toml(self):
         text, _ = codex_adapter.render(agent())
         tomllib.loads(text)
@@ -178,6 +198,12 @@ class TestSchema(unittest.TestCase):
         p.write_text(text, encoding="utf-8")
         return p
 
+    def test_models_and_effort_are_optional(self):
+        a = agent()
+        del a["models"]
+        del a["effort"]
+        gen_agents.validate(a, Path("probe.md"))
+
     def test_rejects_missing_field(self):
         with tempfile.TemporaryDirectory() as t:
             p = self._write(Path(t), "---\nname: probe\n---\n\n" + "body " * 30)
@@ -220,7 +246,7 @@ class TestGeneratorEndToEnd(unittest.TestCase):
         canon = ROOT / "agents" / "reviewer.md"
         backup = canon.read_text(encoding="utf-8")
         try:
-            canon.write_text(backup.replace("effort: high", "effort: low"), encoding="utf-8")
+            canon.write_text(backup.replace("description: >", "description: >\n  Changed description for drift detection."), encoding="utf-8")
             r = self.run_gen("--check")
             self.assertEqual(r.returncode, 1)
             self.assertIn("DRIFT", r.stderr)

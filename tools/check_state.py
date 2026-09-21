@@ -11,6 +11,8 @@ are not loaded: loading another chat's task is worse than choosing none.
 This script only reports; it neither repairs nor writes anything.
 """
 import argparse
+import model_config
+import state_fs
 import os
 import subprocess
 import sys
@@ -205,6 +207,28 @@ def current(r, root, resolution):
         r.add(WARN, "chat is unbound; no active tasks exist")
 
 
+def model_settings(r, root):
+    """Check independent chat records without treating them as task bindings."""
+    try:
+        names = state_fs.names(root, model_config.CHAT)
+        project = state_fs.read(root, model_config.PROJECT)
+        if project is None and not any(n != '.locks' for n in names):
+            return
+        roles = model_config.roles(root)
+        model_config.load_project(root, roles)
+        for name in names:
+            if name == '.locks':
+                continue
+            try:
+                if not name.endswith('.json'):
+                    raise model_config.ConfigError('expected <session-id>.json')
+                model_config.load_chat(root, name[:-5], roles)
+            except (ValueError, OSError) as exc:
+                r.add(ERR, f'{model_config.CHAT / name}: {exc}')
+    except (ValueError, OSError) as exc:
+        r.add(ERR, f'model configuration: {exc}')
+
+
 def main(argv=None):
     global ROOT, MEMORY
     ap = argparse.ArgumentParser(description=__doc__,
@@ -244,6 +268,7 @@ def main(argv=None):
         current(r, ROOT, ts.resolve(ROOT, sid))
     except (ts.StateError, OSError) as e:
         r.add(ERR, str(e))
+    model_settings(r, ROOT)
     memory(r)
     return r.dump()
 

@@ -81,6 +81,27 @@ Intent is recorded alongside results. A decision such as "first check migration
 compatibility, then implement" leaves no trace in the code; without a record,
 it cannot be recovered from anywhere.
 
+### Delegation context, when relevant
+
+Record model/effort preferences only when they add continuation value. Identify the
+source harness and full chat ID, and separate requested settings from verified launches.
+Keep chat preferences scoped to that chat; preserve the actual scope of an explicit
+user authorization, including authorized cross-harness work.
+
+```text
+Historical delegation context (Codex chat <full-session-id>): requested
+gpt-5.6-sol/high for subagents. This records the source chat only. On resume,
+resolve the current chat's native-harness configuration; do not copy these values.
+Runtime application: not verified.
+```
+
+This is optional prose, not required frontmatter or a configuration snapshot.
+On reading earlier entries, treat another chat's launch preferences as history,
+even if they were written as task-wide requirements. Retain task goals, decisions,
+results, and explicit user authorizations applicable to the current work. Resolve
+ambiguous conflicts before delegation under the operational contract; do not rewrite
+old entries or infer permission to invoke another harness from a recorded model.
+
 ## What NOT to write
 
 A complete retelling of the state every time. Record the delta — what changed at this

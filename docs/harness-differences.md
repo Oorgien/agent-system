@@ -8,11 +8,44 @@ and how it was verified.
 
 ---
 
+## Chat launch configuration (2026-09-16)
+
+The implementation separates role permissions and instructions from model selection.
+This section describes the launch contract and generated files; it is not evidence of
+successful live launches. Earlier dated observations below describe legacy pinned roles.
+
+| | Claude Code | Codex |
+|---|---|---|
+| Shipped generated model | `model: inherit` | native model field omitted |
+| Shipped generated effort | omitted; session effort | native effort field omitted |
+| Chat model | pass supported model override while invoking the file-defined role | pass model through a supported subagent launch tool |
+| Chat effort | configure the orchestrator's session with `/effort` | pass the resolved effort through a supported launch tool |
+
+For each role, `config show --chat --json` resolves chat role → chat defaults → project
+role → inheritance and reports sources and compatibility warnings. The CLI does not
+perform the launch or change current harness settings. Claude `effort.claude` is rejected;
+its session-only `/effort` selection is version-dependent.
+
+Some Codex launch tools accept `model` and `reasoning_effort`, but a full-history
+`fork_turns="all"` cannot combine with those overrides. Use a bounded or empty fork and
+supply task context. Tool availability and native role configuration must be checked
+before dispatch; role prompts and access boundaries must remain intact. Native pins
+can take precedence over invocation settings. Even omitted values can select harness
+defaults instead of parent values: inheritance is an intent until launch metadata confirms it.
+
+Legacy explicit canonical fields continue to generate pinned definitions. Remove these
+fields and regenerate/update to adopt chat selection. Runtime incompatibilities must be
+reported rather than silently choosing another model or effort. Reusing an existing agent
+does not switch its launch settings. Nested delegates need the effective policy passed
+explicitly, because a new session ID does not load the parent's chat file.
+
+---
+
 ## Observed while writing definitions by hand (2026-09-09)
 
 These differences are visible from comparing files, **before** any actual run.
 
-### 1. Model and effort
+### 1. Model and effort (historical pinned definitions)
 
 | | Claude | Codex |
 |---|---|---|
@@ -36,7 +69,7 @@ There is still a difference, but it concerns **the allowed values and behavior w
 
 A silent downgrade is exactly the outcome the generator is meant to prevent,
 so level/model compatibility is checked in `adapters/claude.py` before writing the file.
-The canonical format knows only `low/medium/high` — the intersection available in both harnesses.
+The legacy canonical `effort` field knows only `low/medium/high` — the intersection available in both harnesses.
 
 **Open.** The table of levels by model was taken from documentation and has not been
 verified by running it; a model outside the table produces a warning rather than a failure.

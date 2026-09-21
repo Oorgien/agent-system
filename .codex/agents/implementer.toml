@@ -6,8 +6,6 @@ Implements scoped code changes together with their tests. Use when the implement
 approach is sufficiently understood and the change is bounded.
 """
 
-model = "gpt-5-codex"
-model_reasoning_effort = "high"
 
 # capabilities: code-search, filesystem-read, filesystem-write, shell, vcs
 sandbox_mode = "workspace-write"

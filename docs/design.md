@@ -551,11 +551,6 @@ description: >
 
 role: implement
 
-models:
-  claude: sonnet
-  codex: <codex model id>
-effort: high
-
 capabilities:
   - filesystem-read
   - filesystem-write
@@ -577,25 +572,28 @@ Verify the resulting behavior before returning.
 
 ### Configuration axes
 
-**`models`** contains **explicit model names per harness**, not an abstract tier.
+**Model and effort are launch policy, separate from the role.** Project settings in
+`.agents/config.toml` support `[agents.<role>.models]` for `claude` and `codex`, and
+`[agents.<role>.effort]` for `codex`. Project-wide defaults are intentionally absent.
+Chat settings in `.agents/state/chat-config/<session-id>.json` add `defaults` and
+per-role overrides, independent of task bindings. Each key resolves through chat role,
+chat defaults, project role, then inheritance. Explicit `inherit` stops resolution;
+removing a key reveals the next layer. Chat files are gitignored, while project config
+can be versioned in installed projects. Neither belongs to the installation manifest.
 
-There is only one reason for indirection here: one canonical field must expand to two different
-values because model names differ between harnesses. A couple of lines in the agent file solve
-that problem — read the definition and immediately see what will run.
+The orchestrator reads `agent-system config show --chat --json` before each delegation
+and applies supported launch parameters. Prompts and capabilities still come from role
+files. Shipped roles omit canonical `models` and `effort`; Claude generation selects
+`model: inherit` without effort, and Codex omits both native fields. Optional legacy
+canonical fields remain supported for deliberately pinned roles, with their existing
+validation. Such pins can block chat overrides and require migration before dynamic use.
 
-A tier abstraction (`premium/standard/fast` + a mapping table) pays off when there are many
-agents and “move every standard agent to another model” becomes a real bulk operation. With
-three roles, editing three files costs less than maintaining a dictionary that must be kept
-in mind. Introduce it when the set grows.
-
-**The orchestrator model is not part of the canonical definitions.** It is session configuration:
-`/model` in Claude Code, `model` in `.codex/config.toml`. It changes as circumstances require —
-running it through a generator serves no purpose. Set it manually where it belongs.
-
-**`effort`** is `high | medium | low`. It specifies the required reasoning effort, independently
-of the model: only combinations supported by the selected model and harness version are valid.
-The adapter validates the resulting pair after `overrides`; an unsupported combination is an
-error, not a silent change to the model or effort.
+Claude effort follows the orchestrator's session; only Codex has a per-subagent effort
+setting. The CLI does not reconfigure the current harness or running children. Nested
+delegation requires explicit propagation, because child sessions have different IDs.
+Requested settings and verified launch metadata are separate evidence: unsupported
+parameters, native defaults, and model availability can prevent the intended launch.
+See the operational contract §5 and [harness differences](harness-differences.md).
 
 **`capabilities`** is `filesystem-read | filesystem-write | code-search | shell | vcs | web`.
 Capabilities describe intent and the role's required restrictions, but do not enforce permissions

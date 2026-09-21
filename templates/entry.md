@@ -23,3 +23,10 @@ Decision: <agreed intent, including the next step if it is not obvious>
 Rejected: <approach> — <reason>
 Checks: <result, including "not run">
 Worktree: <clean | dirty: what was left and why>
+
+<Optional, only when delegation history adds continuation value; preserve the
+actual scope of any explicit user authorization. Example:>
+Historical delegation context (Codex chat <full-session-id>): requested
+gpt-5.6-sol/high for subagents. This records the source chat only. On resume,
+resolve the current chat's native-harness configuration; do not copy these values.
+Runtime application: <verified launch evidence | not verified>

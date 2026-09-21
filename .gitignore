@@ -1,7 +1,13 @@
+# Agents
 .agents
 .claude/skills
 .github
+TODOs.md
+*SPEC*
 skills.yaml
 
 .DS_Store
 __pycache__/
+
+# Agent-system
+tasks

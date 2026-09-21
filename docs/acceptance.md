@@ -153,3 +153,79 @@ reproduce a race for the same name at the `link` level; that is covered by
 not Codex → Claude in the same temporary project. Because task state is harness-independent
 (the same files), the transfer is covered by the Codex run above and this run, but a single
 end-to-end Codex ↔ Claude run on one project has not been performed.
+
+## Project and chat launch configuration, 2026-09-17
+
+The CLI stores per-role project preferences and independent chat overrides. Resolution
+is field-by-field: chat role, chat defaults, project role, then inheritance. Project-wide
+defaults and Claude effort overrides are rejected. The orchestrator applies preferences
+when launching a role; saving config is not a harness control operation.
+
+The final full suite passed: **190 tests** (`python3 -B -m unittest discover tools/tests -q`).
+Generator drift, state validation, and `git diff --check` passed.
+
+Local checks cover two chats with different settings, explicit inheritance, unset,
+concurrent writes, malformed files, symlink rejection, custom roles surviving updates,
+an unrelated application installer, and initialization with an empty role directory.
+Generated files match their sources. Comparing all three canonical roles against HEAD
+confirms that bodies, descriptions, capabilities, and overrides are unchanged; only
+model/effort pins were removed. Review findings received regression tests and were closed.
+
+Live acceptance remains incomplete:
+
+- Claude Code 2.1.273 reported `loggedIn: false` in the local preflight.
+- Codex CLI 0.149.0 could not initialize its app-server inside the filesystem sandbox.
+  A request to run a bounded read-only test in a temporary project outside that sandbox
+  was rejected by automatic approval review because the external process could send
+  instructions/configuration to a service without separately approved data transfer.
+  That run was not performed and the rejection was not bypassed.
+
+After authorization is available, verify the actual selected model and effort from
+harness launch metadata, including named-role loading and preserved access boundaries.
+For Claude, verify session effort inheritance separately from the per-call model.
+Do not count an agent's self-reported model or CLI resolution output as runtime proof.
+
+### Authorized synthetic Codex attempt, 2026-09-17
+
+After the user authorized a live test and transfer of test instructions, automatic
+approval review still rejected the repository-derived fixture: it required explicit
+permission for sending repository contract/role contents. No rejected command ran.
+
+A narrower test containing only newly written neutral instructions, a `probe_reader`
+TOML role with `sandbox_mode = "read-only"`, and `marker.txt` was approved and executed.
+Codex CLI 0.149.0 ran with `--ignore-user-config --ephemeral --json`, parent model
+`gpt-5.6-sol`, and parent effort `low`. The requested child was the named test role
+with model `gpt-5.6-sol` and effort `high`.
+
+The event stream contains no subagent spawn. The parent reported that its exposed
+`spawn_agent` had `task_name`, `message`, `fork_turns`, `model`, and `reasoning_effort`,
+but no role-selection parameter. This is a reported tool limitation, not independent
+schema inspection or evidence of child execution. It did not substitute a generic
+agent. Thus the run does not establish named-role loading, child effort/model, or
+permission preservation. Desktop tool capabilities can differ from this CLI surface.
+The CLI also emitted warnings about malformed global agent definitions even with
+`--ignore-user-config`; those user files were not modified.
+
+### Repository-authorized and Desktop attempts, 2026-09-17
+
+The user explicitly authorized sending the repository role definitions and operational
+contract. The full temporary-project CLI run was approved and executed. It resolved
+reviewer to `gpt-5.6-sol` / `high`, read the native read-only definition, and did not
+spawn: the CLI parent again reported no role-selection parameter. Permission review
+is no longer the blocker for this test; the CLI tool surface is.
+
+A separate Desktop `collaboration.spawn_agent` call selected `agent_type="reviewer"`,
+`model="gpt-5.6-sol"`, `reasoning_effort="high"`, and `fork_turns="none"`. The child read
+the temporary probe and returned `model-config-smoke`. Its local rollout metadata,
+not its answer, records role `reviewer`, model `gpt-5.6-sol`, and effort `high`.
+Evidence session: `01a0af9a-2a5f-70f0-a2d8-82c1c1ea72aa`, parent
+`01a0abef-d33b-7071-a59b-3ea7bad593ee`, agent path `/root/named_role_acceptance`.
+
+**Access-boundary acceptance did not pass.** The generated reviewer definition has
+`sandbox_mode = "read-only"`, but the child's `turn_context.sandbox_policy.type` is
+`workspace-write`. No write was attempted; the test therefore does not prove that
+writes would succeed, but it cannot establish the requested read-only boundary.
+Named-role metadata alone is insufficient evidence that the native definition's
+permissions were enforced. Model/effort selection is verified on this Desktop surface;
+complete native-role loading and permission preservation remain unresolved. Do not
+present this as a successful end-to-end acceptance of all feature requirements.

@@ -85,7 +85,7 @@ def render(agent, source_dir=".agents/agents"):
             )
 
     effort = (agent.get("effort") or "").strip()
-    model = agent["models"]["claude"]
+    model = agent.get("models", {}).get("claude", "inherit")
     warnings.extend(_check_effort(agent["name"], effort, model))
 
     ordered = [t for t in TOOL_ORDER if t in tools]

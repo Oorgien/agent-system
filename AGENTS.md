@@ -160,7 +160,7 @@ form can silently merge two different chats into one binding. If no source provi
 an ID, the session works **without a binding** — a valid mode, not an error.
 
 In an installed project, `.gitignore` excludes the `.agents/memory` symlink,
-`.agents/state/sessions/`, `.agents/runs.jsonl`, and legacy `.agents/state/ACTIVE`/`LOCK`
+`.agents/state/sessions/`, `.agents/state/chat-config/`, `.agents/runs.jsonl`, and legacy `.agents/state/ACTIVE`/`LOCK`
 until migration, rather than all of `.agents/`. Definitions, skills, and task state
 are versioned in the main project.
 
@@ -176,6 +176,8 @@ There is no separate state snapshot. The journal is read in full; no projection 
 3. Validate the binding (see below)
 4. Read task.md and the ENTIRE journal
 5. Check the actual repository state: git status, diff
+6. Read current-chat launch settings: agent-system config show --chat --json;
+   apply only the active harness's keys (§5), not historical chat preferences (§4)
 ```
 
 **Step 1 is unconditional.** It applies even when there is no active task or no task
@@ -264,6 +266,12 @@ Intent is recorded alongside results. A decision such as "first check migration
 compatibility with old data, then implement" leaves no trace in the code; without
 a record, it cannot be recovered from anywhere.
 
+Include delegation settings only when they matter for continuation. Label them as
+source-chat history with the harness and full chat ID, and distinguish requested
+model/effort from verified launches (or "not verified"). Preserve the scope of any
+explicit user authorization; chat preferences do not become task-wide constraints.
+This is optional entry prose, not new frontmatter or a required config snapshot.
+
 Worktree state is called out deliberately: a new session will see changes in
 `git status` but cannot tell whether they were abandoned or intentionally left unfinished.
 
@@ -298,9 +306,73 @@ Switching harnesses does not itself trigger or require a checkpoint. When starti
 resuming work, the new harness follows §2: it reads saved state and checks it against
 Git. Unsaved context may be lost.
 
+Retain task goals, decisions, results, and explicit user authorizations whose scope
+includes the resumed work. Treat another chat's model/effort preferences as historical
+context, including old unscoped claims such as "every agent must use Sol". Resolve
+the current chat's configuration under §5; do not copy another chat's settings or infer
+cross-harness authorization from a model name. Same-chat overrides remain applicable.
+If a record's scope conflicts with current policy and cannot be resolved, report the
+conflict before delegation rather than switching harnesses, rewriting configuration,
+or substituting models. Existing journal entries remain unchanged.
+
 ---
 
 ## 5. Delegation
+
+### Model and effort at delegation
+
+Use the active harness's native subagents by default: Codex delegates to Codex roles;
+Claude Code delegates to Claude roles. Cross-harness delegation requires an explicit
+user request whose scope includes the current work. Historical launch records, model
+names, and another chat's preferences are not that authorization.
+
+Role instructions and capabilities remain authoritative in the canonical role files.
+Launch settings live separately: `.agents/config.toml` contains project settings per
+role; `.agents/state/chat-config/<session-id>.json` contains this chat's overrides and
+is gitignored. Chat settings require a valid session ID, but no task binding.
+
+Before **each spawn or reuse**, run `agent-system config show --chat --json` and resolve
+settings for the selected role. Without a session ID, use `config show --json` for
+project settings and report that chat overrides require a valid ID. Each key uses:
+chat role → chat defaults → project role → inheritance.
+Apply only `models.codex` and `effort.codex` in Codex, or
+`models.claude` in Claude Code; Claude effort follows the current session. Other
+harness keys do not select an execution harness. An explicit `inherit` selects
+inheritance immediately; `unset` removes an override and reveals the next layer.
+Project-wide defaults are unsupported.
+Persist an explicit natural-language request for this chat with `config set --chat`:
+
+```bash
+agent-system config set --chat defaults models.claude sonnet
+agent-system config set --chat defaults models.codex gpt-5.6-sol
+agent-system config set --chat defaults effort.codex high
+agent-system config set --chat reviewer models.claude opus
+```
+
+Apply resolved values using the harness's supported launch parameters while preserving
+the selected role's prompt and permission boundaries. Claude effort always follows the
+session: use `/effort` in Claude Code; `effort.claude` is unsupported. Codex model and
+effort overrides require a tool that accepts them. For tools with `fork_turns`, use a
+bounded or empty history when overriding parameters; `fork_turns="all"` cannot accept
+those overrides. Include the necessary task context explicitly.
+
+Inspect reported compatibility warnings before dispatch. An explicit native role pin,
+an unsupported launch parameter, or an unavailable model must be reported rather than
+silently replaced. Launching another harness's CLI is not an implicit workaround;
+any cross-harness alternative requires the explicit authorization described above.
+Omitted parameters request inheritance, but native harness defaults can override the
+parent; verify actual launch metadata before claiming inheritance.
+Legacy canonical model/effort fields still generate pins: remove those fields and
+regenerate/update the definitions to enable chat overrides.
+
+Existing agents keep their launch settings. Reuse only when they still match the
+resolved settings; otherwise launch a new agent. Pass the effective policy explicitly
+to agents that may delegate further: a child's different session ID does not inherit
+the parent's config file automatically. The same chat retains settings on resume;
+another chat starts independently. The CLI stores and resolves policy; it neither
+changes the running orchestrator nor proves the harness applied a launch parameter.
+
+### Complexity and stages
 
 Stages are determined by semantic signals, not intuition.
 
@@ -445,4 +517,3 @@ and the requirement to rerun `./setup.sh` in each tree after changing them, are 
 and are not repeated here. Task state is committed and lives on its own branch.
 Agent and skill definitions are versioned by branch: an edit on branch A is not visible
 on branch B until merged.
-

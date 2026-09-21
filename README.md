@@ -140,7 +140,7 @@ The old shared Git store (with `.git` at its root) is rejected before any change
 First preserve its history and prepare separate memory repositories inside an ordinary directory.
 The CLI does not delete the old `.git` or migrate its history automatically.
 
-The project's Git ignore rules exclude `.agents/memory`, `.agents/state/sessions/`,
+The project's Git ignore rules exclude `.agents/memory`, `.agents/state/sessions/`, `.agents/state/chat-config/`,
 `.agents/runs.jsonl`, and legacy `.agents/state/ACTIVE`/`LOCK` until migration —
 not the entire `.agents/`: definitions and task state remain versionable.
 Completed `task.md` files and journals are retained after merge/squash;
@@ -190,6 +190,74 @@ error; the CLI does not remove it automatically. Inspect the remaining files man
 just like a checkpoint using a binding. First explicitly resume a completed task with
 `task set-status <slug> active`. `--stage` accepts 1–64 ASCII characters matching the
 complete pattern `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`; spaces, `#`, and newlines are rejected.
+
+## Subagent models and effort
+
+Keep each role's instructions and permissions in its canonical file. Choose models
+separately in the project or override them for one chat:
+
+```bash
+# Project defaults for individual roles
+agent-system config set implementer models.claude sonnet
+agent-system config set reviewer models.claude opus
+agent-system config set implementer models.codex gpt-5.6-sol
+agent-system config set implementer effort.codex high
+
+# Override all subagents in the current chat
+agent-system config set --chat defaults models.claude sonnet
+agent-system config set --chat defaults models.codex gpt-5.6-sol
+agent-system config set --chat defaults effort.codex high
+
+# Inspect effective settings and their sources, or remove an override
+agent-system config show --chat
+agent-system config show --chat --json
+agent-system config unset --chat defaults models.claude
+```
+
+All commands accept `--project /path/to/project`. Chat commands use the same session
+ID sources as task commands; `--session-id <id>` selects one explicitly. A task binding
+is unnecessary. In an installed project, versionable `.agents/config.toml` stores only
+per-role settings, for example:
+
+```toml
+[agents.implementer.models]
+claude = "sonnet"
+codex = "gpt-5.6-sol"
+
+[agents.implementer.effort]
+codex = "high"
+
+[agents.reviewer.models]
+claude = "opus"
+```
+
+There is no project `[defaults.models]`. Chat JSON files in
+`.agents/state/chat-config/` are gitignored and may contain `defaults` plus individual
+`agents`. For each setting, precedence is **chat role → chat defaults → project role →
+inheritance**. `inherit` deliberately chooses inheritance at that layer; `unset` lets
+the next layer take effect. Resuming the same chat retains its settings; another chat
+has its own overrides. Files are local to the worktree.
+
+You can instead tell the orchestrator, “In this chat, launch all subagents on Sonnet.”
+The contract instructs it to save this request and consult the effective config before
+each delegation. Changes apply to subsequent launches; running agents do not switch.
+Nested delegation must receive the effective policy explicitly.
+
+For Claude Code, effort follows the orchestrator's session. Choose it with `/effort`;
+the session-only selection depends on the installed Claude version. The CLI accepts
+`effort.codex`, not `effort.claude`, and never changes the running orchestrator.
+Models in the examples require availability in the selected harness and account.
+
+No `update` is needed after changing launch settings. Config files are user-owned and
+outside the installation manifest. Existing canonical definitions with explicit model
+or effort fields still generate native pins, which may block launch overrides. Remove
+those fields from the canonical source and regenerate/update once; preserve the role's
+prompt and capabilities. Fresh shipped roles have no pins (Claude renders `model: inherit`).
+
+The CLI resolves requested values, not actual runtime state. The orchestrator must
+handle compatibility warnings and unsupported overrides explicitly and verify launch
+metadata before claiming success. See [harness differences](docs/harness-differences.md)
+for runtime constraints.
 
 ## Interrupted installation
 

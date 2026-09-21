@@ -7,8 +7,6 @@ invariants, test adequacy and scope violations. Use after non-trivial implementa
 changes, before considering a task done.
 """
 
-model = "gpt-5-codex"
-model_reasoning_effort = "high"
 
 # capabilities: code-search, filesystem-read
 sandbox_mode = "read-only"

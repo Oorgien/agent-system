@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 import gen_agents
+import model_config
 from install_support import Conflict, config, digest, dump, git, relative, safe_path, snapshot, tree_files, tree_hashes
 from install_memory import plan_memory, recheck_memory
 
@@ -26,7 +27,7 @@ def blocks():
     return {
         'AGENTS.md': f'{BEGIN}\n{instruction}\n{END}\n'.encode(),
         'CLAUDE.md': f'{BEGIN}\n{instruction}\nAlso read `AGENTS.md` for the existing project rules.\n{END}\n'.encode(),
-        '.gitignore': f'{GBEGIN}\n/.agents/memory\n/.agents/state/sessions/\n/.agents/state/ACTIVE\n/.agents/state/LOCK\n/.agents/runs.jsonl\n{GEND}\n'.encode(),
+        '.gitignore': f'{GBEGIN}\n/.agents/memory\n/.agents/state/sessions/\n/.agents/state/chat-config/\n/.agents/state/ACTIVE\n/.agents/state/LOCK\n/.agents/runs.jsonl\n{GEND}\n'.encode(),
     }
 
 
@@ -126,6 +127,10 @@ def make_plan(root, source, command, memory_key=None, memory_from=None):
         raise Conflict('Installed bundle differs; use agent-system update')
     # Runtime identity comes from name metadata, not necessarily the filename.
     role_names = {Path(n).stem for n in files if n.startswith('.agents/agents/')}
+    configured_roles = set(role_names)
+    if (root / gen_agents.INSTALLED_CANON).is_dir():
+        configured_roles.update(model_config.roles(root, allow_empty=True))
+    model_config.load_project(root, configured_roles)
     skill_names = {n.split('/')[2] for n in files if n.startswith('.agents/skills/')}
     for directory, pattern, wanted in [('.claude/agents', '*.md', role_names),
                                         ('.codex/agents', '*.toml', role_names),

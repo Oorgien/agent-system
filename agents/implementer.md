@@ -6,11 +6,6 @@ description: >
 
 role: implement
 
-models:
-  claude: sonnet
-  codex: gpt-5-codex        # VERIFY: check against the current Codex model list
-effort: high
-
 capabilities:
   - filesystem-read
   - filesystem-write

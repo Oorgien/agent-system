@@ -60,3 +60,16 @@ The repository uses English throughout, including scripts, generated text, and c
 - **References to specific models** in the prompt body: models change, while the prompt is canonical.
 - **Duplication between an agent and a skill.** If several roles need a procedure,
   make it a skill rather than a paragraph in three prompts.
+
+## Models and effort
+
+Keep model and effort out of new canonical role definitions. Role files own instructions
+and capabilities; `.agents/config.toml` owns per-role project launch defaults, and chat
+settings may override them. See [configuration examples](../README.md#subagent-models-and-effort).
+
+Optional legacy `models` and `effort` fields remain valid and produce native pins.
+Use them only when pinning is intentional: the native definition may override the
+orchestrator's chat settings. To migrate a role, remove those fields and regenerate
+without changing its prompt or capabilities. Claude then uses `model: inherit` and
+inherits session effort; Codex leaves native model and effort unset. Runtime application
+still depends on the available launch tool, not merely on valid generated syntax.

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import check_state
 import chat_titles
+import config_cli
+import model_config
 import gen_agents
 import task_state as ts
 from adapters import RenderError, Inexpressible
@@ -27,6 +29,7 @@ def doctor(root):
     if not m:
         raise Conflict('No installation manifest. Run agent-system init')
     verify_owned(root, m)
+    model_config.load_project(root, model_config.roles(root))
     errors = False
     for name in m['links']:
         p = safe_path(root, name)
@@ -278,6 +281,7 @@ def main(argv=None):
     parser.add_argument('--project', dest='global_project', type=Path)
     sub = parser.add_subparsers(dest='command', required=True)
     add_task_commands(sub)
+    config_cli.add_commands(sub)
     for command in ('init', 'update', 'doctor'):
         p = sub.add_parser(command)
         p.add_argument('--project', type=Path)
@@ -296,6 +300,8 @@ def main(argv=None):
         # so there is no reason to prohibit them here.
         if args.command == 'task':
             return run_task(args, root)
+        if args.command == 'config':
+            return config_cli.run(args, root)
         if root == SOURCE.resolve():
             raise Conflict('This is the tool checkout; use its developer commands, not project installation')
         if args.command == 'doctor':

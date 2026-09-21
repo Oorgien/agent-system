@@ -78,7 +78,7 @@ State also lives there: `.agents/state/tasks/<slug>/task.md` +
 In the CLI clone, the entire `.agents/` directory is a workspace for agents working
 on the CLI itself (local skills, memory, tasks), gitignored along with the `.claude/skills` link.
 In a connected project, installed definitions and task state can be committed;
-memory, bindings, telemetry, and legacy `ACTIVE`/`LOCK` are excluded until migration.
+memory, bindings, chat launch overrides, telemetry, and legacy `ACTIVE`/`LOCK` are excluded until migration.
 The installer preserves other project skills; the clone's local skills are not shipped.
 
 `agent-system task journal [slug]` reads the journal: legacy `journal.md` first,
@@ -96,6 +96,22 @@ remain gitignored: the former is removed only after the corresponding `bind` wit
 The latter is removed manually after verifying that the old session is inactive,
 then the corresponding `bind` is repeated. See the operational contract for details
 on task creation and validation.
+
+## Launch configuration during development
+
+`tools/model_config.py` resolves per-role project settings from `.agents/config.toml`
+and session overrides from `.agents/state/chat-config/<session-id>.json`. In this clone
+both are local development data under the ignored `.agents/`; installed projects may
+version project config, while chat overrides remain ignored. Neither is installer-owned.
+
+`tools/config_cli.py` implements the CLI commands and reports native role pins that
+can prevent launch overrides. Use `agent-system config show --chat --json` to inspect
+values and their sources. Editing
+launch config does not require regeneration: the orchestrator applies it before launching
+subagents. Generator tests cover optional legacy pins and unchanged role boundaries;
+config tests cover resolution and chat isolation. Live launches remain a separate check.
+See [README](../README.md#subagent-models-and-effort) for commands and the operational
+contract §5 for orchestration requirements.
 
 ## Commands
 
